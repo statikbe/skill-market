@@ -1,0 +1,9 @@
+{
+  "name": "nmbs",
+  "version": "1.0.0",
+  "description": "Zoek Belgische treinverbindingen, vertrektijden en stations op via NMBS/SNCB (iRail API).",
+  "author": {
+    "name": "The Kind Kids"
+  },
+  "keywords": ["nmbs", "sncb", "train", "belgium", "irail"]
+}

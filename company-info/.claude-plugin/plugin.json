@@ -1,0 +1,9 @@
+{
+  "name": "company-info",
+  "version": "1.0.0",
+  "description": "Belgische bedrijfsinformatie: KBO-data, jaarrekeningen (NBB), en publicaties uit het Belgisch Staatsblad.",
+  "author": {
+    "name": "The Kind Kids"
+  },
+  "keywords": ["kbo", "nbb", "belgian-company", "annual-accounts", "staatsblad", "jaarrekening"]
+}

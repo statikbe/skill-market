@@ -18,6 +18,18 @@
       "source": "./tkk-tone",
       "version": "1.0.0",
       "description": "Tone of voice en communicatietemplates voor The Kind Kids / Statik — warm, eerlijk, persoonlijk en menselijk."
+    },
+    {
+      "name": "nmbs",
+      "source": "./nmbs",
+      "version": "1.0.0",
+      "description": "Zoek Belgische treinverbindingen, vertrektijden en stations op via NMBS/SNCB (iRail API)."
+    },
+    {
+      "name": "company-info",
+      "source": "./company-info",
+      "version": "1.0.0",
+      "description": "Belgische bedrijfsinformatie: KBO-data, jaarrekeningen (NBB), en publicaties uit het Belgisch Staatsblad."
     }
   ]
 }

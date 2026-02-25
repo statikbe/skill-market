@@ -4,9 +4,12 @@ Plugin marketplace van The Kind Kids — gedeelde skills en workflows voor Claud
 
 ## Plugins
 
-| Plugin | Beschrijving |
-|--------|-------------|
-| **[tkk-case-writer](./tkk-case-writer)** | Schrijf on-brand cases voor TKK, Statik en Shaved Monkey |
+| Plugin | Beschrijving | Slash commands |
+|--------|-------------|----------------|
+| **[tkk-case-writer](./tkk-case-writer)** | Schrijf on-brand cases voor TKK, Statik en Shaved Monkey | `/tkk-case-writer:write-case` |
+| **[tkk-tone](./tkk-tone)** | Tone of voice en communicatietemplates | — (skill, automatisch actief) |
+| **[nmbs](./nmbs)** | Belgische treinverbindingen via iRail API | `/nmbs:train` |
+| **[company-info](./company-info)** | Belgische bedrijfsinfo: KBO, jaarrekeningen, Staatsblad | `/company-info:company-lookup` |
 
 ## Installeren
 
@@ -15,13 +18,15 @@ Plugin marketplace van The Kind Kids — gedeelde skills en workflows voor Claud
 Voeg eerst de marketplace toe:
 
 ```
-/plugin marketplace add <repo-url>
+/plugin marketplace add statikbe/skill-market
 ```
 
 Installeer dan een plugin:
 
 ```
 /plugin install tkk-case-writer@tkk-plugins
+/plugin install nmbs@tkk-plugins
+/plugin install company-info@tkk-plugins
 ```
 
 ### Lokaal testen
@@ -29,8 +34,17 @@ Installeer dan een plugin:
 Test een plugin zonder te installeren:
 
 ```
-claude --plugin-dir ./tkk-case-writer
+claude --plugin-dir ./nmbs
 ```
+
+## Vereisten
+
+Sommige plugins hebben runtime dependencies:
+
+| Plugin | Vereisten |
+|--------|-----------|
+| **nmbs** | `bun` runtime |
+| **company-info** | `bun` runtime, `python3` met `playwright` package, Chromium |
 
 ## Nieuwe plugin toevoegen
 
