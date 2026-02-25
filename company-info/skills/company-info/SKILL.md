@@ -24,9 +24,9 @@ Three data sources for Belgian companies, all without API keys:
 
 ## Prerequisites
 
-- `bun` runtime
+- `node` runtime (with `npx` available)
 - `python3` with `playwright` package installed (`pip3 install playwright`)
-- Chromium browser at `/opt/homebrew/bin/chromium` (Homebrew)
+- Chromium browser (Playwright's bundled Chromium or system install)
 
 ## Workflow: Company Analysis
 
@@ -44,25 +44,25 @@ When asked to analyze a company, gather data from all three sources:
 
 ```bash
 # Search companies by name (no KBO number needed)
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts search <name> [--postal code]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts search <name> [--postal code]
 
 # KBO registration data (directors, NACE codes, capacities, fiscal year)
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts kbo <enterprise-number>
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts kbo <enterprise-number>
 
 # Company info from NBB (name, address, legal form)
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts company <enterprise-number>
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts company <enterprise-number>
 
 # List filed annual accounts
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts filings <enterprise-number> [--limit N]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts filings <enterprise-number> [--limit N]
 
 # Download accounting data as CSV (structured, with rubric codes)
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts csv <enterprise-number> [--year YYYY]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts csv <enterprise-number> [--year YYYY]
 
 # Download full annual accounts as PDF
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts pdf <enterprise-number> [--year YYYY] [--output path]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts pdf <enterprise-number> [--year YYYY] [--output path]
 
 # List Belgisch Staatsblad publications (Bijlage Rechtspersonen)
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts publications <enterprise-number> [--type TYPE]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/company-info/scripts/nbb-accounts.ts publications <enterprise-number> [--type TYPE]
 ```
 
 Enterprise number formats accepted: `0454064819`, `0454.064.819`, `BE0454064819`.

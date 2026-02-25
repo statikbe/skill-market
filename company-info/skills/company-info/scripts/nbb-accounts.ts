@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env npx tsx
 
 /**
  * nbb-accounts.ts — Fetch Belgian company info from NBB/BNB Consult, KBO, and Belgisch Staatsblad
@@ -160,7 +160,7 @@ async function company(cbe: string) {
 function filings(cbe: string, limit: number) {
   const result = runPlaywright(`
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path="/opt/homebrew/bin/chromium", headless=True)
+    browser = p.chromium.launch(headless=True)
     page = browser.new_page()
     deposits = []
     def handle_response(response):
@@ -203,7 +203,7 @@ with sync_playwright() as p:
 function downloadCsv(cbe: string, year?: number) {
   const result = runPlaywright(`
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path="/opt/homebrew/bin/chromium", headless=True)
+    browser = p.chromium.launch(headless=True)
     page = browser.new_page()
     deposits = []
     def handle_response(response):
@@ -263,7 +263,7 @@ function downloadPdf(cbe: string, year: number | undefined, outputPath: string) 
   const result = runPlaywright(`
 import base64
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path="/opt/homebrew/bin/chromium", headless=True)
+    browser = p.chromium.launch(headless=True)
     page = browser.new_page()
     deposits = []
     def handle_response(response):

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env npx tsx
 
 /**
  * nmbs.ts — Look up Belgian train connections and live departures via iRail API

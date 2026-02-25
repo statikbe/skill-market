@@ -18,13 +18,13 @@ No API key needed.
 
 ```bash
 # Find connections between two stations
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/nmbs/scripts/nmbs.ts route <from> <to> [--time HH:MM] [--date DD/MM/YY] [--results N]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/nmbs/scripts/nmbs.ts route <from> <to> [--time HH:MM] [--date DD/MM/YY] [--results N]
 
 # Live departure board for a station
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/nmbs/scripts/nmbs.ts departures <station> [--limit N]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/nmbs/scripts/nmbs.ts departures <station> [--limit N]
 
 # Search station names
-bun run ${CLAUDE_PLUGIN_ROOT}/skills/nmbs/scripts/nmbs.ts stations [<query>]
+npx tsx ${CLAUDE_PLUGIN_ROOT}/skills/nmbs/scripts/nmbs.ts stations [<query>]
 ```
 
 ## Workflow

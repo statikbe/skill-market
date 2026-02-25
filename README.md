@@ -43,8 +43,8 @@ Sommige plugins hebben runtime dependencies:
 
 | Plugin | Vereisten |
 |--------|-----------|
-| **nmbs** | `bun` runtime |
-| **company-info** | `bun` runtime, `python3` met `playwright` package, Chromium |
+| **nmbs** | `node` + `npx` |
+| **company-info** | `node` + `npx`, `python3` met `playwright` package |
 
 ## Nieuwe plugin toevoegen
 
