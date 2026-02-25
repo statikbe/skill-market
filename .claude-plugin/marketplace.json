@@ -1,0 +1,12 @@
+{
+  "name": "tkk-plugins",
+  "description": "Plugin marketplace van The Kind Kids — gedeelde skills voor het hele team.",
+  "plugins": [
+    {
+      "name": "tkk-case-writer",
+      "version": "1.0.0",
+      "description": "Schrijf gepolijste, on-brand cases in het Nederlands voor The Kind Kids, Statik en Shaved Monkey.",
+      "source": "./tkk-case-writer"
+    }
+  ]
+}
