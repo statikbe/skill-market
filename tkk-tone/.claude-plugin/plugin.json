@@ -1,0 +1,9 @@
+{
+  "name": "tkk-tone",
+  "version": "1.0.0",
+  "description": "Tone of voice en communicatietemplates voor The Kind Kids / Statik — warm, eerlijk, persoonlijk en menselijk.",
+  "author": {
+    "name": "The Kind Kids"
+  },
+  "keywords": ["tone-of-voice", "communication", "dutch", "the-kind-kids", "statik", "hr", "email"]
+}
