@@ -10,6 +10,7 @@ Plugin marketplace van The Kind Kids — gedeelde skills en workflows voor Claud
 | **[tkk-tone](./tkk-tone)** | Tone of voice en communicatietemplates | — (skill, automatisch actief) |
 | **[nmbs](./nmbs)** | Belgische treinverbindingen via iRail API | `/nmbs:train` |
 | **[company-info](./company-info)** | Belgische bedrijfsinfo: KBO, jaarrekeningen, Staatsblad | `/company-info:company-lookup` |
+| **[tempo-log](./tempo-log)** | Log uren in Tempo Cloud — backfill, timesheet review, voorstellen op basis van agenda en git | — (skill, automatisch actief) |
 
 ## Installeren
 
@@ -27,7 +28,16 @@ Installeer dan een plugin:
 /plugin install tkk-case-writer@tkk-plugins
 /plugin install nmbs@tkk-plugins
 /plugin install company-info@tkk-plugins
+/plugin install tempo-log@tkk-plugins
 ```
+
+Voor `tempo-log` is er nog een eenmalige setup-stap na install:
+
+```
+tempo install
+```
+
+Dit symlinkt de CLI naar `~/.local/bin` en kopieert `preferences.template.md` naar `~/.config/tempo-log/preferences.md`. Zie `tempo-log/skills/tempo-log/README.md` voor de rest.
 
 ### Lokaal testen
 
@@ -45,6 +55,7 @@ Sommige plugins hebben runtime dependencies:
 |--------|-----------|
 | **nmbs** | `node` + `npx` |
 | **company-info** | `node` + `npx`, `python3` met `playwright` package |
+| **tempo-log** | `bash` 4+, `curl`, `jq`, `git`; Tempo Cloud API token (manage-worklogs scope); Atlassian accountId |
 
 ## Nieuwe plugin toevoegen
 
