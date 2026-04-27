@@ -1,0 +1,652 @@
+#!/usr/bin/env bash
+# tempo — a small CLI for Statik's Tempo Cloud
+#
+# Env (required): TEMPO_API_TOKEN, TEMPO_ACCOUNT_ID
+# Env (optional): JIRA_EMAIL + JIRA_API_TOKEN — only needed to resolve --issue KEY forms.
+#                 JIRA_BASE_URL (default https://statik.atlassian.net)
+#
+# Deps: curl, jq
+
+set -eu
+
+API=https://api.tempo.io/4
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tempo-cli"
+ACCOUNTS_CACHE="$CACHE_DIR/accounts-open.json"
+ACCOUNTS_CACHE_TTL_MIN=720   # 12h
+
+mkdir -p "$CACHE_DIR"
+
+# -------- helpers --------
+
+_die()            { printf 'tempo: %s\n' "$*" >&2; exit 1; }
+_require_env()    { [ -n "${TEMPO_API_TOKEN:-}" ] || _die "TEMPO_API_TOKEN not set";
+                    [ -n "${TEMPO_ACCOUNT_ID:-}" ] || _die "TEMPO_ACCOUNT_ID not set"; }
+_today()          { date +%F; }
+_days_ago()       { date -v-"$1"d +%F 2>/dev/null || date -d "$1 days ago" +%F; }
+
+_api_get() { curl -s -H "Authorization: Bearer $TEMPO_API_TOKEN" "$API$1"; }
+
+_api_json() {
+  # method, path, [body]
+  local method=$1 path=$2 body=${3:-}
+  if [ -n "$body" ]; then
+    curl -s -X "$method" \
+      -H "Authorization: Bearer $TEMPO_API_TOKEN" \
+      -H "Content-Type: application/json" \
+      -w '\n__HTTP__%{http_code}' -d "$body" "$API$path"
+  else
+    curl -s -X "$method" \
+      -H "Authorization: Bearer $TEMPO_API_TOKEN" \
+      -w '\n__HTTP__%{http_code}' "$API$path"
+  fi
+}
+
+_check_status() {
+  # reads _api_json output on stdin; echoes body or exits nonzero
+  local combined body code
+  combined=$(cat)
+  code=$(printf '%s\n' "$combined" | awk -F'__HTTP__' 'END{print $2}')
+  body=$(printf '%s\n' "$combined" | sed -e 's/__HTTP__[0-9]*$//')
+  case "$code" in
+    2*) printf '%s' "$body" ;;
+    *) printf 'tempo: API error (HTTP %s):\n%s\n' "$code" "$body" >&2; return 1 ;;
+  esac
+}
+
+# Duration string -> integer seconds. Accepts: "1h30m", "2h", "45m", "0.5h", "1.25h", "900" (raw seconds).
+_parse_duration() {
+  local in
+  in=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+  if [[ "$in" =~ ^([0-9]+)h([0-9]+)m$ ]]; then
+    printf '%s' $(( ${BASH_REMATCH[1]} * 3600 + ${BASH_REMATCH[2]} * 60 ))
+  elif [[ "$in" =~ ^([0-9]+)h$ ]]; then
+    printf '%s' $(( ${BASH_REMATCH[1]} * 3600 ))
+  elif [[ "$in" =~ ^([0-9]+)m$ ]]; then
+    printf '%s' $(( ${BASH_REMATCH[1]} * 60 ))
+  elif [[ "$in" =~ ^([0-9]*\.[0-9]+)h$ ]]; then
+    awk -v h="${BASH_REMATCH[1]}" 'BEGIN{ printf "%d", h * 3600 }'
+  elif [[ "$in" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$in"
+  else
+    _die "invalid duration '$1' (expected '1h30m', '2h', '45m', '0.5h')"
+  fi
+}
+
+# Normalize time to HH:MM:SS (adds :00 if HH:MM given)
+_norm_time() {
+  local t=$1
+  [[ "$t" =~ ^[0-9]+:[0-9]+$ ]] && printf '%s:00' "$t" || printf '%s' "$t"
+}
+
+_fetch_open_accounts() {
+  local force=${1:-}
+  if [ -z "$force" ] && [ -s "$ACCOUNTS_CACHE" ] && \
+     [ -z "$(find "$ACCOUNTS_CACHE" -mmin +$ACCOUNTS_CACHE_TTL_MIN 2>/dev/null)" ]; then
+    cat "$ACCOUNTS_CACHE"
+    return
+  fi
+  local all='[]' offset=0 chunk count
+  while :; do
+    chunk=$(_api_get "/accounts?limit=500&offset=$offset")
+    count=$(printf '%s' "$chunk" | jq '.results|length')
+    [ "$count" -eq 0 ] && break
+    all=$(printf '%s\n%s' "$all" "$chunk" \
+          | jq -s '.[0] + ([.[1].results[] | select(.status=="OPEN")])')
+    offset=$((offset + count))
+    [ "$count" -lt 500 ] && break
+  done
+  printf '%s' "$all" > "$ACCOUNTS_CACHE"
+  cat "$ACCOUNTS_CACHE"
+}
+
+_resolve_issue() {
+  # issue-key (e.g. OKRADM-3121) or numeric id -> numeric id
+  local in=$1
+  if [[ "$in" =~ ^[0-9]+$ ]]; then printf '%s' "$in"; return; fi
+  [ -n "${JIRA_EMAIL:-}" ] && [ -n "${JIRA_API_TOKEN:-}" ] \
+    || _die "issue key '$in' given but JIRA_EMAIL/JIRA_API_TOKEN not set — pass a numeric issue id instead, or export JIRA_EMAIL and JIRA_API_TOKEN"
+  local base=${JIRA_BASE_URL:-https://statik.atlassian.net}
+  curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$base/rest/api/3/issue/$in?fields=summary" \
+    | jq -er '.id // error("could not resolve " + "'"$in"'")'
+}
+
+# -------- subcommands --------
+
+cmd_get() {
+  local json=false from="" to=""
+  local pos=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json|-j) json=true; shift ;;
+      *) pos+=("$1"); shift ;;
+    esac
+  done
+  from="${pos[0]:-$(_days_ago 7)}"
+  to="${pos[1]:-$(_today)}"
+  local resp
+  resp=$(_api_get "/worklogs/user/$TEMPO_ACCOUNT_ID?from=$from&to=$to&limit=1000")
+  if $json; then printf '%s\n' "$resp"; return; fi
+  printf '%s' "$resp" | jq -r '
+    .results
+    | sort_by(.startDate, (.startTime // ""))
+    | .[]
+    | "\(.startDate) \(.startTime // "        ")  \((.timeSpentSeconds/3600)|(. * 100 | round / 100))h  issue=\(.issue.id)  \((.attributes.values[]|select(.key=="_Account_").value) // "-")  \(.description)"'
+}
+
+cmd_day() {
+  local json=false date=""
+  for a in "$@"; do
+    case "$a" in --json|-j) json=true ;; *) date="$a" ;; esac
+  done
+  [ -z "$date" ] && date=$(_today)
+  local resp
+  resp=$(_api_get "/worklogs/user/$TEMPO_ACCOUNT_ID?from=$date&to=$date&limit=200")
+  if $json; then printf '%s\n' "$resp"; return; fi
+  local total
+  total=$(printf '%s' "$resp" | jq '([.results[].timeSpentSeconds]|add // 0)/3600 | .*100 | round/100')
+  local gap
+  gap=$(awk -v t="$total" 'BEGIN{ printf "%.2f", 8 - t }')
+  printf '%s — logged %sh / 8h target (gap: %sh)\n' "$date" "$total" "$gap"
+  printf '%s' "$resp" | jq -r '
+    .results
+    | sort_by(.startTime // "")
+    | .[]
+    | "  \(.startTime // "        ")  \((.timeSpentSeconds/3600)|(. * 100 | round / 100))h  issue=\(.issue.id)  \((.attributes.values[]|select(.key=="_Account_").value) // "-")  \(.description)"'
+}
+
+cmd_summary() {
+  local from=${1:?usage: tempo summary <from> <to>} to=${2:?usage: tempo summary <from> <to>}
+  local resp total_hours total_days
+  resp=$(_api_get "/worklogs/user/$TEMPO_ACCOUNT_ID?from=$from&to=$to&limit=2000")
+  total_hours=$(printf '%s' "$resp" | jq -r 'def r2(x): (x * 100 | round) / 100; r2(([.results[].timeSpentSeconds]|add // 0)/3600)')
+  total_days=$(printf '%s' "$resp" | jq -r '[.results[].startDate] | unique | length')
+  printf 'Period %sh total across %s days\n' "$total_hours" "$total_days"
+  printf '%s' "$resp" | jq -r '
+    def r2(x): (x * 100 | round) / 100;
+    .results
+    | group_by(.startDate)
+    | map({ date: .[0].startDate,
+            hours: (([.[].timeSpentSeconds]|add)/3600) })
+    | .[]
+    | "  \(.date)  \(r2(.hours))h" + (if .hours < 8 then "  ⚠ under 8h" else "" end)
+  '
+  printf '\nBy account (top 10):\n'
+  printf '%s' "$resp" | jq -r '
+    def r2(x): (x * 100 | round) / 100;
+    [.results[] | {
+      acc: ((.attributes.values[] | select(.key=="_Account_") | .value) // "?"),
+      sec: .timeSpentSeconds
+    }]
+    | group_by(.acc)
+    | map({account: .[0].acc, hours: (([.[].sec]|add)/3600)})
+    | sort_by(-.hours)
+    | .[0:10]
+    | .[]
+    | "  \(.account)  \(r2(.hours))h"'
+}
+
+cmd_accounts() {
+  local prefix=${1:?usage: tempo accounts <PROJECT_PREFIX>}
+  _fetch_open_accounts | jq -r --arg p "$prefix" '
+    [.[] | select(.key | startswith($p))]
+    | sort_by(.key)
+    | .[]
+    | "  \(.key)  [\(.category.name)]  \(.name)"'
+}
+
+cmd_last_account() {
+  local prefix=${1:?usage: tempo last-account <PROJECT_PREFIX>}
+  local from=$(_days_ago 365) to=$(_today)
+  _api_get "/worklogs/user/$TEMPO_ACCOUNT_ID?from=$from&to=$to&limit=2000" \
+    | jq -r --arg p "$prefix" '
+      [.results[]
+        | select((.attributes.values[]? | select(.key=="_Account_") | .value) // "" | startswith($p))]
+      | sort_by(.createdAt)
+      | reverse
+      | .[0]
+      | if . then (.attributes.values[] | select(.key=="_Account_") | .value) else "none" end'
+}
+
+cmd_add() {
+  local issue="" date="" time="" duration="" account="" desc="" worktype=SeniorDevelopment billable=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --issue|--issue-id) issue=$2; shift 2 ;;
+      --date)             date=$2; shift 2 ;;
+      --time)             time=$2; shift 2 ;;
+      --duration)         duration=$2; shift 2 ;;
+      --account)          account=$2; shift 2 ;;
+      --desc|-m)          desc=$2; shift 2 ;;
+      --worktype)         worktype=$2; shift 2 ;;
+      --billable)         billable=$2; shift 2 ;;
+      *) _die "unknown arg: $1" ;;
+    esac
+  done
+  [ -n "$issue" ]    || _die "--issue required (key or numeric id)"
+  [ -n "$date" ]     || _die "--date YYYY-MM-DD required"
+  [ -n "$duration" ] || _die "--duration required (e.g. 1h30m)"
+  [ -n "$account" ]  || _die "--account required (e.g. OKRADMREG)"
+  [ -n "$desc" ]     || _die "--desc required"
+  local issue_id secs bill
+  issue_id=$(_resolve_issue "$issue")
+  secs=$(_parse_duration "$duration")
+  bill=$([ -n "$billable" ] && _parse_duration "$billable" || printf '%s' "$secs")
+  local payload
+  if [ -n "$time" ]; then
+    local t_norm; t_norm=$(_norm_time "$time")
+    payload=$(jq -n \
+      --argjson issueId "$issue_id" --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" --arg t "$t_norm" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {issueId: $issueId, authorAccountId: $author, startDate: $d, startTime: $t,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  else
+    payload=$(jq -n \
+      --argjson issueId "$issue_id" --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {issueId: $issueId, authorAccountId: $author, startDate: $d,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  fi
+  _api_json POST "/worklogs" "$payload" | _check_status | jq '{
+    worklogId: .tempoWorklogId, issueId: .issue.id,
+    date: .startDate, time: .startTime,
+    hours: (.timeSpentSeconds/3600), description,
+    attributes: .attributes.values
+  }'
+}
+
+cmd_batch() {
+  # Submit many worklogs from a JSONL file (or stdin). One JSON object per line,
+  # fields match `tempo add` flags: {issue, date, duration, account, desc,
+  # [time], [worktype], [billable]}. Aliases accepted: issueKey/issueId for
+  # issue, description for desc. Blank lines and lines starting with # are
+  # ignored.
+  local dry_run=false input=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run|-n) dry_run=true; shift ;;
+      -) input=-; shift ;;
+      -*) _die "unknown flag: $1" ;;
+      *)  input=$1; shift ;;
+    esac
+  done
+  [ -n "$input" ] || _die "usage: tempo batch [--dry-run] <file.jsonl|->  (one JSON worklog per line)"
+
+  local lines_file cleanup_lines=false
+  if [ "$input" = "-" ]; then
+    lines_file=$(mktemp); cleanup_lines=true
+    cat > "$lines_file"
+  else
+    [ -f "$input" ] || _die "not a file: $input"
+    lines_file=$input
+  fi
+
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
+
+  local i=0
+  local -a pids=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in
+      ''|\#*) continue ;;
+    esac
+    i=$((i+1))
+    local idx; printf -v idx '%04d' "$i"
+    if $dry_run; then
+      _batch_preview "$line" "$tmp_dir/$idx.json" &
+    else
+      _batch_worker "$line" "$tmp_dir/$idx.json" &
+    fi
+    pids+=($!)
+  done < "$lines_file"
+
+  local ok=0 failed=0
+  for pid in "${pids[@]}"; do
+    if wait "$pid"; then ok=$((ok+1)); else failed=$((failed+1)); fi
+  done
+
+  local f
+  for f in "$tmp_dir"/*.json; do
+    [ -f "$f" ] || continue
+    cat "$f"; printf '\n'
+  done
+
+  printf 'batch: %s ok, %s failed%s\n' "$ok" "$failed" \
+    "$($dry_run && printf ' (dry-run)')" >&2
+
+  rm -rf "$tmp_dir"
+  $cleanup_lines && rm -f "$lines_file"
+  [ "$failed" -eq 0 ] || return 1
+}
+
+_batch_extract() {
+  # Parse one input line into validated fields; echoes TAB-separated:
+  # issue_id<TAB>date<TAB>time<TAB>secs<TAB>bill<TAB>account<TAB>desc<TAB>worktype
+  # Exits non-zero with a JSON error blob on stderr on validation failure.
+  local line=$1
+  local issue date time duration account desc worktype billable
+  issue=$(printf '%s' "$line" | jq -r '.issue // .issueKey // .issueId // empty')
+  date=$(printf '%s' "$line" | jq -r '.date // empty')
+  time=$(printf '%s' "$line" | jq -r '.time // empty')
+  duration=$(printf '%s' "$line" | jq -r '.duration // empty')
+  account=$(printf '%s' "$line" | jq -r '.account // empty')
+  desc=$(printf '%s' "$line" | jq -r '.desc // .description // empty')
+  worktype=$(printf '%s' "$line" | jq -r '.worktype // "SeniorDevelopment"')
+  billable=$(printf '%s' "$line" | jq -r '.billable // empty')
+
+  local missing=""
+  [ -n "$issue" ]    || missing="$missing issue"
+  [ -n "$date" ]     || missing="$missing date"
+  [ -n "$duration" ] || missing="$missing duration"
+  [ -n "$account" ]  || missing="$missing account"
+  [ -n "$desc" ]     || missing="$missing desc"
+  if [ -n "$missing" ]; then
+    printf 'missing:%s' "$missing" >&2; return 1
+  fi
+
+  local issue_id secs bill t_norm=""
+  issue_id=$(_resolve_issue "$issue" 2>&1) || { printf 'resolve: %s' "$issue_id" >&2; return 1; }
+  secs=$(_parse_duration "$duration" 2>&1) || { printf 'duration: %s' "$secs" >&2; return 1; }
+  bill=$([ -n "$billable" ] && _parse_duration "$billable" || printf '%s' "$secs")
+  [ -n "$time" ] && t_norm=$(_norm_time "$time")
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "$issue_id" "$date" "$t_norm" "$secs" "$bill" "$account" "$desc" "$worktype"
+}
+
+_batch_worker() {
+  local line=$1 out=$2
+  local fields err err_file
+  err_file=$(mktemp)
+  if ! fields=$(_batch_extract "$line" 2>"$err_file"); then
+    err=$(cat "$err_file"); rm -f "$err_file"
+    jq -n --arg err "$err" --argjson input "$line" \
+      '{ok: false, error: $err, input: $input}' > "$out"
+    return 1
+  fi
+  rm -f "$err_file"
+  IFS=$'\t' read -r issue_id date time secs bill account desc worktype <<<"$fields"
+
+  local payload
+  if [ -n "$time" ]; then
+    payload=$(jq -n \
+      --argjson issueId "$issue_id" --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" --arg t "$time" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {issueId: $issueId, authorAccountId: $author, startDate: $d, startTime: $t,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  else
+    payload=$(jq -n \
+      --argjson issueId "$issue_id" --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {issueId: $issueId, authorAccountId: $author, startDate: $d,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  fi
+
+  local combined body code
+  combined=$(_api_json POST "/worklogs" "$payload")
+  code=$(printf '%s\n' "$combined" | awk -F'__HTTP__' 'END{print $2}')
+  body=$(printf '%s\n' "$combined" | sed -e 's/__HTTP__[0-9]*$//')
+  case "$code" in
+    2*)
+      printf '%s' "$body" | jq --argjson input "$line" '{
+        ok: true,
+        worklogId: .tempoWorklogId, issueId: .issue.id,
+        date: .startDate, time: .startTime,
+        hours: (.timeSpentSeconds/3600), description,
+        attributes: .attributes.values,
+        input: $input
+      }' > "$out"
+      ;;
+    *)
+      jq -n --arg err "HTTP $code" --arg body "$body" --argjson input "$line" \
+        '{ok: false, error: $err, body: $body, input: $input}' > "$out"
+      return 1
+      ;;
+  esac
+}
+
+_batch_preview() {
+  local line=$1 out=$2
+  local fields err err_file
+  err_file=$(mktemp)
+  if ! fields=$(_batch_extract "$line" 2>"$err_file"); then
+    err=$(cat "$err_file"); rm -f "$err_file"
+    jq -n --arg err "$err" --argjson input "$line" \
+      '{ok: false, error: $err, input: $input}' > "$out"
+    return 1
+  fi
+  rm -f "$err_file"
+  IFS=$'\t' read -r issue_id date time secs bill account desc worktype <<<"$fields"
+  jq -n --argjson input "$line" \
+    --argjson issueId "$issue_id" --arg date "$date" --arg time "$time" \
+    --argjson secs "$secs" --argjson bill "$bill" \
+    --arg account "$account" --arg desc "$desc" --arg worktype "$worktype" '{
+      ok: true, dryRun: true,
+      issueId: $issueId, date: $date, time: $time,
+      hours: ($secs/3600), billableHours: ($bill/3600),
+      account: $account, worktype: $worktype, description: $desc,
+      input: $input
+    }' > "$out"
+}
+
+cmd_update() {
+  local id=${1:?usage: tempo update <worklog-id> [flags]}; shift
+  local cur
+  cur=$(_api_get "/worklogs/$id")
+  local has_error
+  has_error=$(printf '%s' "$cur" | jq 'has("errors")')
+  [ "$has_error" = "true" ] && { printf 'tempo: %s\n' "$cur" >&2; return 1; }
+  local date time secs bill desc worktype account
+  date=$(printf '%s' "$cur" | jq -r '.startDate')
+  time=$(printf '%s' "$cur" | jq -r '.startTime // ""')
+  secs=$(printf '%s' "$cur" | jq -r '.timeSpentSeconds')
+  bill=$(printf '%s' "$cur" | jq -r '.billableSeconds')
+  desc=$(printf '%s' "$cur" | jq -r '.description // ""')
+  worktype=$(printf '%s' "$cur" | jq -r '.attributes.values[]? | select(.key=="_WorkType_") | .value' | head -1)
+  account=$(printf '%s' "$cur" | jq -r '.attributes.values[]? | select(.key=="_Account_") | .value' | head -1)
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --date)     date=$2; shift 2 ;;
+      --time)     time=$(_norm_time "$2"); shift 2 ;;
+      --duration) secs=$(_parse_duration "$2"); bill=$secs; shift 2 ;;
+      --billable) bill=$(_parse_duration "$2"); shift 2 ;;
+      --account)  account=$2; shift 2 ;;
+      --desc|-m)  desc=$2; shift 2 ;;
+      --worktype) worktype=$2; shift 2 ;;
+      *) _die "unknown arg: $1" ;;
+    esac
+  done
+  local payload
+  if [ -n "$time" ]; then
+    payload=$(jq -n --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" --arg t "$time" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {authorAccountId: $author, startDate: $d, startTime: $t,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  else
+    payload=$(jq -n --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {authorAccountId: $author, startDate: $d,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  fi
+  _api_json PUT "/worklogs/$id" "$payload" | _check_status | jq '{
+    worklogId: .tempoWorklogId, date: .startDate, time: .startTime,
+    hours: (.timeSpentSeconds/3600), description,
+    attributes: .attributes.values
+  }'
+}
+
+cmd_delete() {
+  local id=${1:?usage: tempo delete <worklog-id>}
+  _api_json DELETE "/worklogs/$id" | _check_status >/dev/null
+  printf 'deleted worklog %s\n' "$id"
+}
+
+cmd_accounts_refresh() {
+  rm -f "$ACCOUNTS_CACHE"
+  _fetch_open_accounts >/dev/null
+  printf 'refreshed: %s (%s OPEN accounts cached)\n' "$ACCOUNTS_CACHE" "$(jq 'length' < "$ACCOUNTS_CACHE")"
+}
+
+cmd_install() {
+  local force=0
+  local bin_dir="${TEMPO_INSTALL_BIN_DIR:-$HOME/.local/bin}"
+  local config_dir="${TEMPO_CONFIG_DIR:-$HOME/.config/tempo-log}"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force)  force=1; shift ;;
+      --bin)    bin_dir=$2; shift 2 ;;
+      --config) config_dir=$2; shift 2 ;;
+      -h|--help)
+        cat <<'EOF'
+tempo install — wire up PATH and personal config for the tempo-log skill
+
+Usage:
+  tempo install [--bin <dir>] [--config <dir>] [--force]
+
+Effects:
+  • Symlinks tempo and git-scan into <bin>           (default: ~/.local/bin)
+    git-scan is exposed as `tempo-git-scan` so it doesn't collide with anything else.
+  • Creates <config>                                  (default: ~/.config/tempo-log)
+  • Copies preferences.template.md → <config>/preferences.md if missing.
+    Use --force to overwrite an existing preferences.md.
+
+Override defaults via env: TEMPO_INSTALL_BIN_DIR, TEMPO_CONFIG_DIR.
+EOF
+        return 0 ;;
+      *) _die "unknown install option: $1 (try: tempo install --help)" ;;
+    esac
+  done
+
+  # Resolve the real script path, following symlinks (so reinstalling from a
+  # symlinked tempo on $PATH still locates the original skill directory).
+  local src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    local link_dir
+    link_dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ "$src" != /* ]] && src="$link_dir/$src"
+  done
+  local script_dir skill_dir
+  script_dir=$(cd -P "$(dirname "$src")" && pwd)
+  skill_dir=$(dirname "$script_dir")
+
+  mkdir -p "$bin_dir" "$config_dir"
+
+  _link_one() {
+    local target=$1 link=$2
+    if [ -L "$link" ]; then
+      local current
+      current=$(readlink "$link")
+      if [ "$current" = "$target" ]; then
+        printf '  = symlink already correct: %s\n' "$link"
+        return 0
+      fi
+      ln -sf "$target" "$link"
+      printf '  ~ updated symlink:        %s -> %s (was %s)\n' "$link" "$target" "$current"
+    elif [ -e "$link" ]; then
+      _die "$link exists and is not a symlink; refusing to overwrite"
+    else
+      ln -s "$target" "$link"
+      printf '  + created symlink:        %s -> %s\n' "$link" "$target"
+    fi
+  }
+
+  printf 'Installing CLI binaries into %s:\n' "$bin_dir"
+  _link_one "$script_dir/tempo"    "$bin_dir/tempo"
+  _link_one "$script_dir/git-scan" "$bin_dir/tempo-git-scan"
+
+  printf '\nSetting up personal config in %s:\n' "$config_dir"
+  local prefs_src="$skill_dir/preferences.template.md"
+  local prefs_dst="$config_dir/preferences.md"
+  [ -f "$prefs_src" ] || _die "template not found: $prefs_src"
+  if [ -f "$prefs_dst" ] && [ "$force" -ne 1 ]; then
+    printf '  = preferences.md already exists: %s (use --force to overwrite)\n' "$prefs_dst"
+  else
+    cp "$prefs_src" "$prefs_dst"
+    printf '  + wrote: %s\n' "$prefs_dst"
+  fi
+
+  printf '\nNext steps:\n'
+  printf '  1. Edit %s and fill in your identity, schedule, etc.\n' "$prefs_dst"
+  printf '  2. Set TEMPO_API_TOKEN and TEMPO_ACCOUNT_ID env vars (see README.md).\n'
+  printf '  3. (Optional) cp %s/team-config.template.md %s/<circle>-config.md\n' "$skill_dir" "$config_dir"
+  printf '     and update preferences.md so team_config points at it.\n'
+
+  case ":$PATH:" in
+    *":$bin_dir:"*) : ;;
+    *) printf '\n⚠  %s is not on your PATH. Add this to your shell init:\n     export PATH="%s:$PATH"\n' "$bin_dir" "$bin_dir" ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+tempo — small CLI for Statik's Tempo Cloud (Atlassian Cloud)
+
+Usage:
+  tempo get [from] [to] [--json]         my worklogs, default last 7 days
+  tempo day [date] [--json]              one day, default today; shows 8h gap
+  tempo summary <from> <to>              per-day totals + top accounts
+  tempo accounts <PROJECT_PREFIX>        OPEN accounts whose key starts with prefix
+  tempo last-account <PROJECT_PREFIX>    my most recently used Account on this prefix
+  tempo add --issue <KEY|ID> --date YYYY-MM-DD --duration 1h30m --account KEY --desc "..."
+           [--time HH:MM] [--worktype SeniorDevelopment] [--billable 1h]
+  tempo batch [--dry-run] <file.jsonl|->   submit many worklogs from JSONL
+           One JSON object per line: {issue, date, duration, account, desc,
+           [time], [worktype], [billable]}. Aliases: issueKey/issueId, description.
+           Blank lines and # comments ignored. Prints NDJSON results in input
+           order; summary to stderr. Parallel execution.
+  tempo update <worklog-id> [--date ...] [--time ...] [--duration ...] [--account ...] [--desc ...] [--worktype ...]
+  tempo delete <worklog-id>
+  tempo accounts-refresh                 force rebuild of OPEN-account cache (normally 12h TTL)
+  tempo install [--bin <dir>] [--config <dir>] [--force]
+                                         symlink CLI onto $PATH and bootstrap ~/.config/tempo-log/preferences.md
+
+Environment:
+  TEMPO_API_TOKEN  (required)
+  TEMPO_ACCOUNT_ID (required — your Atlassian accountId)
+  JIRA_EMAIL       (optional — needed only for --issue KEY resolution)
+  JIRA_API_TOKEN   (optional — needed only for --issue KEY resolution)
+  JIRA_BASE_URL    (optional — default https://statik.atlassian.net)
+EOF
+}
+
+# -------- dispatch --------
+
+# install and help do not need API tokens, so handle them before _require_env.
+case "${1:-}" in
+  install)           shift; cmd_install "$@"; exit 0 ;;
+  ""|-h|--help|help) usage; exit 0 ;;
+esac
+
+_require_env
+case "$1" in
+  get)               shift; cmd_get "$@" ;;
+  day)               shift; cmd_day "$@" ;;
+  summary)           shift; cmd_summary "$@" ;;
+  accounts)          shift; cmd_accounts "$@" ;;
+  last-account)      shift; cmd_last_account "$@" ;;
+  add)               shift; cmd_add "$@" ;;
+  batch)             shift; cmd_batch "$@" ;;
+  update)            shift; cmd_update "$@" ;;
+  delete|rm)         shift; cmd_delete "$@" ;;
+  accounts-refresh)  shift; cmd_accounts_refresh "$@" ;;
+  *) printf 'unknown command: %s\n' "$1" >&2; usage >&2; exit 1 ;;
+esac

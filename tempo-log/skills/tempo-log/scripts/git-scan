@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# git-scan — list commits across configured project dirs in a date window.
+#
+# Usage:
+#   git-scan <YYYY-MM-DD>                  single day
+#   git-scan <YYYY-MM-DD> <YYYY-MM-DD>     inclusive range (00:00 → 23:59:59)
+#
+# Configured via env vars (skill workflow exports these from preferences.md / team-config.md):
+#   GIT_SCAN_AUTHORS  space-separated git --author patterns (e.g. "sten govaerts")
+#                     fallback: `git config --global user.name` (with stderr warning)
+#   GIT_SCAN_PARENTS  space-separated parent dirs to scan
+#                     fallback: $HOME/PhpStormProjects $HOME/WebStormProjects $HOME/PyCharmProjects
+#   GIT_SCAN_SKIP     space-separated repo basenames to skip
+#                     fallback: (none)
+#
+# Always exits 0 on valid invocation, so it is safe to call in parallel batches
+# alongside other tools (a non-zero exit here would cancel sibling tool calls).
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+  echo "usage: $(basename "$0") <YYYY-MM-DD> [YYYY-MM-DD]" >&2
+  exit 2
+fi
+
+from="${1}T00:00:00"
+to="${2:-$1}T23:59:59"
+
+read -r -a authors <<<"${GIT_SCAN_AUTHORS:-}"
+read -r -a parents <<<"${GIT_SCAN_PARENTS:-$HOME/PhpStormProjects $HOME/WebStormProjects $HOME/PyCharmProjects}"
+read -r -a skip <<<"${GIT_SCAN_SKIP:-}"
+
+if [ ${#authors[@]} -eq 0 ]; then
+  fallback=$(git config --global --get user.name 2>/dev/null || true)
+  if [ -n "$fallback" ]; then
+    authors=("$fallback")
+    printf 'git-scan: GIT_SCAN_AUTHORS not set; falling back to git config user.name=%q\n' "$fallback" >&2
+  else
+    printf 'git-scan: GIT_SCAN_AUTHORS not set and no git user.name to fall back on; refusing to match all authors.\n' >&2
+    exit 0
+  fi
+fi
+
+is_skipped() {
+  local name="$1"
+  for s in "${skip[@]}"; do
+    [ "$name" = "$s" ] && return 0
+  done
+  return 1
+}
+
+author_args=()
+for a in "${authors[@]}"; do
+  author_args+=(--author="$a")
+done
+
+for parent in "${parents[@]}"; do
+  [ -d "$parent" ] || continue
+  for d in "$parent"/*/; do
+    [ -d "$d/.git" ] || continue
+    name=$(basename "$d")
+    is_skipped "$name" && continue
+    log=$(git -C "$d" log "${author_args[@]}" \
+          --since="$from" --until="$to" \
+          --pretty=format:'%ad %h %s' --date=iso 2>/dev/null) || true
+    if [ -n "$log" ]; then
+      printf '=== %s ===\n%s\n\n' "$name" "$log"
+    fi
+  done
+done
+
+exit 0

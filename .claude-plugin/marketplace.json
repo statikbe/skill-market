@@ -30,6 +30,12 @@
       "source": "./company-info",
       "version": "1.0.0",
       "description": "Belgische bedrijfsinformatie: KBO-data, jaarrekeningen (NBB), en publicaties uit het Belgisch Staatsblad."
+    },
+    {
+      "name": "tempo-log",
+      "source": "./tempo-log",
+      "version": "1.0.0",
+      "description": "Log time in Tempo Cloud (Atlassian Cloud). Backfill missing hours, review timesheets, and propose worklogs from your calendar and git history."
     }
   ]
 }
