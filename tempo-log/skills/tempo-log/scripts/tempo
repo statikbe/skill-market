@@ -493,6 +493,196 @@ _batch_preview() {
     }' > "$out"
 }
 
+cmd_batch_update() {
+  # Update many worklogs from a JSONL file (or stdin). One JSON object per line:
+  # {id, [date], [time], [duration], [account], [desc], [worktype], [billable]}.
+  # Aliases: worklogId for id, description for desc. Only `id` is required;
+  # any field omitted is preserved from the current worklog. Blank lines and
+  # lines starting with # are ignored.
+  local dry_run=false input=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run|-n) dry_run=true; shift ;;
+      -) input=-; shift ;;
+      -*) _die "unknown flag: $1" ;;
+      *)  input=$1; shift ;;
+    esac
+  done
+  [ -n "$input" ] || _die "usage: tempo batch-update [--dry-run] <file.jsonl|->  (one JSON patch per line)"
+
+  local lines_file cleanup_lines=false
+  if [ "$input" = "-" ]; then
+    lines_file=$(mktemp); cleanup_lines=true
+    cat > "$lines_file"
+  else
+    [ -f "$input" ] || _die "not a file: $input"
+    lines_file=$input
+  fi
+
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
+
+  local i=0
+  local -a pids=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in
+      ''|\#*) continue ;;
+    esac
+    i=$((i+1))
+    local idx; printf -v idx '%04d' "$i"
+    if $dry_run; then
+      _batch_update_preview "$line" "$tmp_dir/$idx.json" &
+    else
+      _batch_update_worker  "$line" "$tmp_dir/$idx.json" &
+    fi
+    pids+=($!)
+  done < "$lines_file"
+
+  local ok=0 failed=0
+  for pid in "${pids[@]}"; do
+    if wait "$pid"; then ok=$((ok+1)); else failed=$((failed+1)); fi
+  done
+
+  local f
+  for f in "$tmp_dir"/*.json; do
+    [ -f "$f" ] || continue
+    cat "$f"; printf '\n'
+  done
+
+  printf 'batch-update: %s ok, %s failed%s\n' "$ok" "$failed" \
+    "$($dry_run && printf ' (dry-run)')" >&2
+
+  rm -rf "$tmp_dir"
+  $cleanup_lines && rm -f "$lines_file"
+  [ "$failed" -eq 0 ] || return 1
+}
+
+_batch_update_worker() {
+  local line=$1 out=$2
+  local id v cur
+  id=$(printf '%s' "$line" | jq -r '.id // .worklogId // empty')
+  if [ -z "$id" ]; then
+    jq -n --argjson input "$line" '{ok: false, error: "missing: id", input: $input}' > "$out"
+    return 1
+  fi
+
+  cur=$(_api_get "/worklogs/$id")
+  if [ -z "$cur" ] || [ "$(printf '%s' "$cur" | jq 'has("errors") or has("error")')" = "true" ]; then
+    jq -n --arg id "$id" --arg body "$cur" --argjson input "$line" \
+      '{ok: false, error: ("GET /worklogs/" + $id + " failed"), body: $body, input: $input}' > "$out"
+    return 1
+  fi
+
+  # Defaults from current worklog
+  local date time secs bill desc worktype account
+  date=$(printf '%s' "$cur" | jq -r '.startDate')
+  time=$(printf '%s' "$cur" | jq -r '.startTime // ""')
+  secs=$(printf '%s' "$cur" | jq -r '.timeSpentSeconds')
+  bill=$(printf '%s' "$cur" | jq -r '.billableSeconds')
+  desc=$(printf '%s' "$cur" | jq -r '.description // ""')
+  worktype=$(printf '%s' "$cur" | jq -r '[.attributes.values[]? | select(.key=="_WorkType_") | .value][0] // ""')
+  account=$(printf '%s'  "$cur" | jq -r '[.attributes.values[]? | select(.key=="_Account_")  | .value][0] // ""')
+
+  # Apply overrides from input
+  v=$(printf '%s' "$line" | jq -r '.date // empty');                 [ -n "$v" ] && date=$v
+  v=$(printf '%s' "$line" | jq -r '.time // empty');                 [ -n "$v" ] && time=$(_norm_time "$v")
+  v=$(printf '%s' "$line" | jq -r '.duration // empty')
+  if [ -n "$v" ]; then
+    if ! secs=$(_parse_duration "$v" 2>&1); then
+      jq -n --arg err "duration: $secs" --argjson input "$line" \
+        '{ok: false, error: $err, input: $input}' > "$out"
+      return 1
+    fi
+    bill=$secs
+  fi
+  v=$(printf '%s' "$line" | jq -r '.billable // empty')
+  if [ -n "$v" ]; then
+    if ! bill=$(_parse_duration "$v" 2>&1); then
+      jq -n --arg err "billable: $bill" --argjson input "$line" \
+        '{ok: false, error: $err, input: $input}' > "$out"
+      return 1
+    fi
+  fi
+  v=$(printf '%s' "$line" | jq -r '.account // empty');              [ -n "$v" ] && account=$v
+  v=$(printf '%s' "$line" | jq -r '.desc // .description // empty'); [ -n "$v" ] && desc=$v
+  v=$(printf '%s' "$line" | jq -r '.worktype // empty');             [ -n "$v" ] && worktype=$v
+
+  local payload
+  if [ -n "$time" ]; then
+    payload=$(jq -n --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" --arg t "$time" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {authorAccountId: $author, startDate: $d, startTime: $t,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  else
+    payload=$(jq -n --arg author "$TEMPO_ACCOUNT_ID" \
+      --arg d "$date" \
+      --argjson secs "$secs" --argjson bill "$bill" \
+      --arg desc "$desc" --arg wt "$worktype" --arg acc "$account" '
+      {authorAccountId: $author, startDate: $d,
+       timeSpentSeconds: $secs, billableSeconds: $bill, description: $desc,
+       attributes: [{key: "_WorkType_", value: $wt}, {key: "_Account_", value: $acc}]}')
+  fi
+
+  local combined body code
+  combined=$(_api_json PUT "/worklogs/$id" "$payload")
+  code=$(printf '%s\n' "$combined" | awk -F'__HTTP__' 'END{print $2}')
+  body=$(printf '%s\n' "$combined" | sed -e 's/__HTTP__[0-9]*$//')
+  case "$code" in
+    2*)
+      printf '%s' "$body" | jq --argjson input "$line" '{
+        ok: true,
+        worklogId: .tempoWorklogId,
+        date: .startDate, time: .startTime,
+        hours: (.timeSpentSeconds/3600), description,
+        attributes: .attributes.values,
+        input: $input
+      }' > "$out"
+      ;;
+    *)
+      jq -n --arg err "HTTP $code" --arg body "$body" --argjson input "$line" \
+        '{ok: false, error: $err, body: $body, input: $input}' > "$out"
+      return 1
+      ;;
+  esac
+}
+
+_batch_update_preview() {
+  # Validates input shape only — does not fetch the current worklog, so the
+  # output reflects the patch the user supplied, not the merged result.
+  local line=$1 out=$2
+  local id v secs="" bill=""
+  id=$(printf '%s' "$line" | jq -r '.id // .worklogId // empty')
+  if [ -z "$id" ]; then
+    jq -n --argjson input "$line" '{ok: false, error: "missing: id", input: $input}' > "$out"
+    return 1
+  fi
+  v=$(printf '%s' "$line" | jq -r '.duration // empty')
+  if [ -n "$v" ]; then
+    if ! secs=$(_parse_duration "$v" 2>&1); then
+      jq -n --arg err "duration: $secs" --argjson input "$line" \
+        '{ok: false, error: $err, input: $input}' > "$out"
+      return 1
+    fi
+  fi
+  v=$(printf '%s' "$line" | jq -r '.billable // empty')
+  if [ -n "$v" ]; then
+    if ! bill=$(_parse_duration "$v" 2>&1); then
+      jq -n --arg err "billable: $bill" --argjson input "$line" \
+        '{ok: false, error: $err, input: $input}' > "$out"
+      return 1
+    fi
+  fi
+  jq -n --argjson input "$line" --arg id "$id" '{
+    ok: true, dryRun: true,
+    worklogId: ($id|tonumber? // $id),
+    patch: ($input | with_entries(select(.key | IN("date","time","duration","billable","account","desc","description","worktype")))),
+    input: $input
+  }' > "$out"
+}
+
 cmd_update() {
   local id=${1:?usage: tempo update <worklog-id> [flags]}; shift
   local cur
@@ -668,6 +858,11 @@ Usage:
            Blank lines and # comments ignored. Prints NDJSON results in input
            order; summary to stderr. Parallel execution.
   tempo update <worklog-id> [--date ...] [--time ...] [--duration ...] [--account ...] [--desc ...] [--worktype ...]
+  tempo batch-update [--dry-run] <file.jsonl|->   patch many worklogs from JSONL
+           One JSON object per line: {id, [date], [time], [duration], [account],
+           [desc], [worktype], [billable]}. Aliases: worklogId, description.
+           Only `id` is required; omitted fields are preserved from the current
+           worklog. Blank lines and # comments ignored. Parallel execution.
   tempo delete <worklog-id>
   tempo accounts-refresh                 force rebuild of OPEN-account cache (normally 12h TTL)
   tempo install [--bin <dir>] [--config <dir>] [--force]
@@ -701,6 +896,7 @@ case "$1" in
   add)               shift; cmd_add "$@" ;;
   batch)             shift; cmd_batch "$@" ;;
   update)            shift; cmd_update "$@" ;;
+  batch-update)      shift; cmd_batch_update "$@" ;;
   delete|rm)         shift; cmd_delete "$@" ;;
   accounts-refresh)  shift; cmd_accounts_refresh "$@" ;;
   *) printf 'unknown command: %s\n' "$1" >&2; usage >&2; exit 1 ;;
