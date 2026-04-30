@@ -194,6 +194,50 @@ cmd_summary() {
     | "  \(.account)  \(r2(.hours))h"'
 }
 
+cmd_audit() {
+  # Lists worklogs in [from, to] that are missing _Account_ or _WorkType_.
+  local json=false
+  local pos=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json|-j) json=true; shift ;;
+      *) pos+=("$1"); shift ;;
+    esac
+  done
+  local from=${pos[0]:?usage: tempo audit <from> <to> [--json]}
+  local to=${pos[1]:?usage: tempo audit <from> <to> [--json]}
+  local resp filtered count
+  resp=$(_api_get "/worklogs/user/$TEMPO_ACCOUNT_ID?from=$from&to=$to&limit=2000")
+  filtered=$(printf '%s' "$resp" | jq '
+    .results
+    | map({
+        id: .tempoWorklogId,
+        date: .startDate,
+        time: (.startTime // ""),
+        hours: ((.timeSpentSeconds/3600)|(. * 100 | round / 100)),
+        issueId: .issue.id,
+        account:  ((.attributes.values[]? | select(.key=="_Account_")  | .value) // ""),
+        worktype: ((.attributes.values[]? | select(.key=="_WorkType_") | .value) // ""),
+        description: (.description // "")
+      })
+    | map(. + {missing: [
+        (if .account  == "" then "_Account_"  else empty end),
+        (if .worktype == "" then "_WorkType_" else empty end)
+      ]})
+    | map(select(.missing | length > 0))
+    | sort_by(.date, .time)
+  ')
+  if $json; then printf '%s\n' "$filtered"; return; fi
+  count=$(printf '%s' "$filtered" | jq 'length')
+  if [ "$count" -eq 0 ]; then
+    printf 'audit %s..%s: no worklogs missing _Account_ or _WorkType_\n' "$from" "$to"
+    return
+  fi
+  printf '%s' "$filtered" | jq -r '.[] |
+    "  \(.id)  \(.date) \(if .time == "" then "        " else .time end)  \(.hours)h  issue=\(.issueId)  missing=[\(.missing | join(","))]  \(.description)"'
+  printf '\naudit %s..%s: %s worklog(s) missing attributes\n' "$from" "$to" "$count"
+}
+
 cmd_accounts() {
   local prefix=${1:?usage: tempo accounts <PROJECT_PREFIX>}
   _fetch_open_accounts | jq -r --arg p "$prefix" '
@@ -613,6 +657,7 @@ Usage:
   tempo get [from] [to] [--json]         my worklogs, default last 7 days
   tempo day [date] [--json]              one day, default today; shows 8h gap
   tempo summary <from> <to>              per-day totals + top accounts
+  tempo audit <from> <to> [--json]       list worklogs missing _Account_ or _WorkType_
   tempo accounts <PROJECT_PREFIX>        OPEN accounts whose key starts with prefix
   tempo last-account <PROJECT_PREFIX>    my most recently used Account on this prefix
   tempo add --issue <KEY|ID> --date YYYY-MM-DD --duration 1h30m --account KEY --desc "..."
@@ -650,6 +695,7 @@ case "$1" in
   get)               shift; cmd_get "$@" ;;
   day)               shift; cmd_day "$@" ;;
   summary)           shift; cmd_summary "$@" ;;
+  audit)             shift; cmd_audit "$@" ;;
   accounts)          shift; cmd_accounts "$@" ;;
   last-account)      shift; cmd_last_account "$@" ;;
   add)               shift; cmd_add "$@" ;;
