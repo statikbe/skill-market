@@ -7,7 +7,7 @@
 #
 # Deps: curl, jq
 
-set -eu
+set -euo pipefail
 
 API=https://api.tempo.io/4
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tempo-cli"
@@ -43,13 +43,22 @@ _api_json() {
 
 _check_status() {
   # reads _api_json output on stdin; echoes body or exits nonzero
-  local combined body code
+  local combined body code hint=""
   combined=$(cat)
   code=$(printf '%s\n' "$combined" | awk -F'__HTTP__' 'END{print $2}')
   body=$(printf '%s\n' "$combined" | sed -e 's/__HTTP__[0-9]*$//')
   case "$code" in
     2*) printf '%s' "$body" ;;
-    *) printf 'tempo: API error (HTTP %s):\n%s\n' "$code" "$body" >&2; return 1 ;;
+    *)
+      # Tempo returns "closed or archived" even when the account is OPEN but
+      # the issue's per-issue Account allowlist rejects it. Add a hint so
+      # callers don't waste a cache refresh chasing a non-issue.
+      if printf '%s' "$body" | grep -qiE 'closed|archived'; then
+        hint=$'\n  hint: an OPEN account can also fail here when the issue'"'"'s per-issue Account allowlist rejects it. Verify the issue allows this Account before refreshing the OPEN-accounts cache.'
+      fi
+      printf 'tempo: API error (HTTP %s):\n%s%s\n' "$code" "$body" "$hint" >&2
+      return 1
+      ;;
   esac
 }
 
