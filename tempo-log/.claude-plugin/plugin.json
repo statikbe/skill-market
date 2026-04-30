@@ -1,0 +1,9 @@
+{
+  "name": "tempo-log",
+  "version": "1.0.0",
+  "description": "Log time in Tempo Cloud (Atlassian Cloud) for Statik/TKK. Backfill missing hours, review timesheets, and propose worklogs from your calendar and git history.",
+  "author": {
+    "name": "The Kind Kids"
+  },
+  "keywords": ["tempo", "jira", "atlassian", "timesheet", "worklog", "statik", "tkk"]
+}
