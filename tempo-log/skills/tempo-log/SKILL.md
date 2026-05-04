@@ -82,6 +82,9 @@ tempo update <worklog-id> [--date ...] [--time ...] [--duration ...] [--account 
 tempo delete <worklog-id>
 tempo accounts-refresh                 force rebuild of OPEN-account cache (normally 12h TTL)
 tempo memory                           print the resolved config layer chain (personal/team/org/skill)
+tempo memory --learned                 print learned-mappings JSONL (sorted by count desc)
+tempo memory --forget <pattern>        remove all rows with this exact title_pattern
+tempo memory --suppress <pattern>      mark rows with this title_pattern as never-promote
 ```
 
 Duration formats: `1h30m`, `2h`, `45m`, `0.5h`, `1.25h`. The CLI rounds to Tempo's 15-min granularity implicitly via `timeSpentSeconds`.
