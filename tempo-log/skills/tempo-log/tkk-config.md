@@ -50,6 +50,17 @@ When `tempo accounts <prefix>` returns multiple candidates, use the category to 
 - `Voortraject` (`*VTJ`) — pre-project phase
 - `(niet meer gebruiken)` — deprecated; avoid
 
+## Account hygiene — `tempo last-account` can be stale
+
+`tempo last-account <prefix>` returns the account from the most recent worklog matching the prefix. That cached default can be **wrong** in several ways:
+
+- the account expired or got deprecated (warranty `*GAR` windows are time-limited; `(niet meer gebruiken)` accounts shouldn't receive new work)
+- the project moved phase (`*VTJ` voortraject → main contract; main → `*SUP` supportcontract)
+- the billing mode changed mid-flight (In Regie → Volgens Offerte, or vice versa)
+- the prefix substring-matches a neighbour (rare with full 6-letter project keys, but real for short prefixes — see "Account for org-wide INT-* tickets" below)
+
+Sanity-check the returned key against `tempo accounts <prefix>` (lists all OPEN accounts) before logging. Circle-specific known traps live in `<circle>-config.md`.
+
 ## Circles → account keys
 
 Reference table — useful even outside your own circle:
@@ -101,6 +112,10 @@ Which guilds your circle typically attends → see your team config (`<circle>-c
 | `Verlof`, `vakantie`, `OOO` (multi-day OK) | INT-1 |
 | `Ziekte` | INT-2 |
 | `Luisterend oor`, `Gesprek met collega` | INT-14 |
+
+### Account for org-wide INT-* tickets — `tempo last-account INT` is wrong
+
+Org-wide INT-* tickets bill to **`INTGENACC`** (General circle), not the caller's circle account. `tempo last-account INT` is misleading: it substring-matches `INTUNI` / `INTMAA` / etc. and returns the personal circle account (e.g. `INTUNIACC` for Rhino devs). When logging INT-1 (Verlof), INT-2 (Ziekte), INT-3 (Demo Donderdag / Round-up / Statik Meetings), or INT-14 (Luisterend oor), pass `--account INTGENACC` explicitly.
 
 ## Calendar markers to skip (org-wide)
 

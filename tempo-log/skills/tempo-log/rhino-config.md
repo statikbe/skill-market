@@ -72,7 +72,13 @@ Internal Laravel packages tracked in INTLAR:
 
 **Cross-project override:** Work on INTLAR issues bills to **INTUNIACC** (Rhino's circle account), not Gilden/Projects — innovation time accrues to the circle that funds it.
 
-**Innovation rule:** When `Innovatietijd Rhino` appears in calendar, default the issue to an INTLAR-<N> from that day's git commits. Ask if unclear.
+**Innovation rule:** When `Innovatietijd Rhino` appears in calendar, default the issue to an INTLAR-<N> from that day's git commits. If the commits during the block look like **client work** (a project key from the Rhino client portfolio rather than INTLAR — e.g. OKRADM, PUBMUS, VLWPLA), the dev may have used the block for billable client work instead of innovation; ask the user whether to bill the client or INTLAR before logging. Ask if otherwise unclear.
+
+## Account hygiene — Rhino-portfolio known traps
+
+For the general failure modes of `tempo last-account` (account expiry, phase change, billing-mode switch, prefix collision), see `tkk-config.md` → "Account hygiene". Known traps in the Rhino portfolio:
+
+- **VLWPLA**: `tempo last-account VLWPLA` returns `VLWPLAGAR` (warranty), which **expired on 2026-03-26**. Current VLWPLA work bills to **VLWPLANEW** (V2, *Volgens Offerte*). Don't trust the cached default — confirm with `tempo accounts VLWPLA` or ask the user.
 
 ## Calendar mappings (Rhino events)
 

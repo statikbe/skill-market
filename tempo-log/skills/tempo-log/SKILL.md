@@ -142,6 +142,8 @@ Optional keys: `time` (omit to leave Tempo unscheduled), `worktype` (default in 
 
 Fallback for one stray entry: `tempo add --issue ... --date ... --duration ... --account ... --desc "..." [--time HH:MM]`.
 
+> **`tempo batch` is not idempotent.** Re-running the same input file submits duplicate worklogs — Tempo has no client-side dedupe key. On partial failure, retry **only the failed rows** (filter the NDJSON output for `ok: false`), never the whole input file. If you double-submit, you'll have to delete the extras with `tempo delete <worklog-id>` manually.
+
 ## `tempo-git-scan` — list the user's commits
 
 Lists commits across configured project dirs in a date window. Reads three env vars from `preferences.md`:
