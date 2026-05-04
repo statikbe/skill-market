@@ -201,6 +201,11 @@ Known limitations:
    - Existing logged hours.
    - Gap to daily target (from `preferences.md`).
    - Candidate entries from calendar + commits + Jira activity, mapped via the merged tables in your team config + `tkk-config.md` + `preferences.md`.
+   - **Pre-prompt check (learning loop).** For each calendar item that doesn't resolve cleanly via the merged tables — typically 1:1 meetings (`Aurel & Jan`), generic recurring titles, or freeform event names — query the learned-mappings JSONL:
+     ```bash
+     tempo memory check --category oneonone --pattern "<title>"
+     ```
+     The output is a JSON array. If any row has `count >= promote_threshold` (default 3, frontmatter of `preferences.md`) and `suppress_promotion != true`, mark the item as a **promotion candidate** with the highest-count `resolved_to` as the proposed issue. Otherwise, mark as ambiguous as before.
 
 5. **Present one day at a time** as a table, oldest first:
 
@@ -214,16 +219,30 @@ Known limitations:
    | 1 | 08:00 | OKRADM-3121| 1.00  | Debug 500 error in WP→CRM payment notification        | calendar+git|
    | 2 | 09:30 | INTUNI-27  | 0.25  | Rhino DM                                              | calendar    |
 
+   Promotion candidates (seen ≥ promote_threshold times — see learning loop):
+   - "Karbon demo" at 14:00 → OKRADM-3200 (confirmed 3× before).
+     Add to `preferences.md` 1:1 mappings? (yes / not yet / never for this pattern)
+
    Ambiguous:
-   - "Karbon demo" meeting at 14:00 — no issue key. Which issue should this log against?
+   - "Sleutelen aan AI & coffee" at 11:00 — no issue key. Which issue should this log against?
    ```
 
 6. **Wait for user feedback**. The user can:
    - Approve (`ok`, `looks good`, `yes`).
    - Adjust by row number ("change #3 to OKRADM-3108", "drop #4", "merge #1 and #5", "bump #3 to 2h").
    - Suggest issues for ambiguous items.
+   - Respond to promotion candidates: `yes`, `not yet`, or `never for this pattern`.
 
    Only proceed to the next day once they confirm the current day.
+
+   **After the user resolves any item that came from a learning-loop category** (1:1 meetings, freeform calendar titles), record the resolution so the count climbs:
+   ```bash
+   tempo memory record --category oneonone --pattern "<title>" --resolved-to <ISSUE-KEY>
+   ```
+   This includes promotion-candidate responses — record on every confirmation, not only at threshold. Then handle the promotion response, if any:
+   - **`yes`** — edit `preferences.md` to add a row to the 1:1 mappings table (or the appropriate section); then `tempo memory --forget "<pattern>"` to remove the JSONL row. Future sessions match from `preferences.md` directly.
+   - **`not yet`** — nothing extra; the count increments via the `record` call above and the prompt re-fires next session at threshold.
+   - **`never for this pattern`** — `tempo memory --suppress "<pattern>"`. Skill still uses the resolution for the current session but never re-prompts.
 
 7. **After all days are confirmed**, submit via `tempo batch`:
    - Resolve each issue key → numeric ID via `getJiraIssue` (the `id` field).
@@ -255,13 +274,14 @@ The merged tables across the three config files cover the common cases. When som
 - Repo isn't in your team config's repo→project list → treat the 6-letter prefix as a guess and ask to confirm.
 - Two candidate issues for the same event → present both with context and let the user pick.
 
-**Remember answers within the session.** If the user maps `Karbon demo → OKRADM-3200` once, don't ask again that conversation.
+**Remember answers within and across sessions.** Within a session: if the user maps `Karbon demo → OKRADM-3200` once, don't ask again that conversation. Across sessions: every confirmed resolution gets recorded in `~/.config/tempo-log/learned-mappings.jsonl` via `tempo memory record`. Once a pattern has been confirmed `promote_threshold` times (default 3, set in `preferences.md` frontmatter), workflow A Step 5 surfaces a promotion candidate instead of re-asking.
 
 ## Critical behaviours (skill-meta)
 
 - **Ask before submitting.** Per-day confirmation. Never POST without explicit approval. (Personal preference in `preferences.md`.)
 - **One day at a time, oldest first.** (Personal preference.)
 - **Don't guess mappings.** If the repo or calendar title isn't in any merged table, ask.
-- **Remember answers within the session** so the user doesn't get asked twice.
+- **Remember answers within the session** so the user doesn't get asked twice. Across sessions, `tempo memory record` accumulates confirmations in `learned-mappings.jsonl`; at `promote_threshold` confirmations, surface a promotion candidate — never silently persist.
+- **Always confirm promotions.** When a learning-loop candidate is at threshold, present it as `pattern → issue (confirmed N× before)` with three responses: `yes` (edit `preferences.md` + `tempo memory --forget`), `not yet` (use the resolution, count keeps climbing), `never for this pattern` (`tempo memory --suppress`). Never edit `preferences.md` without explicit user approval.
 - **If a write fails with attribute errors**, inspect an existing worklog on the same project via `tempo get --json` to copy its `attributes`, then retry. Final fallback: `mcp__atlassian__addWorklogToJiraIssue` (inherits Account; Work Type defaults — fix in Tempo UI later).
 - **Never invent an Account or Work Type value.** If unsure, check an existing worklog on the same project or hit `/work-attributes` to list valid values, then confirm with the user.
