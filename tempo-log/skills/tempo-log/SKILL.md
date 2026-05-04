@@ -144,18 +144,22 @@ Warn at JSON file size > 200KB. Refuse at > 500KB and ask user to narrow the ran
 
 ## Step 0 — load configuration (first action of every workflow run)
 
-Personal config lives in `~/.config/tempo-log/` (created by `tempo install`). Org and team defaults ship with the skill itself — read those from this skill's directory (the path the harness announces as "Base directory for this skill" on load; referred to below as `<skill-dir>`).
+Configuration is split between main agent (the conversation you're in) and the gather fork (the subagent dispatched by Workflow A Step 3).
 
-The team config file is named per circle (`rhino-config.md`, `panda-config.md`, …) and pointed to from `preferences.md`. Resolve in this order:
+### Step 0a — main agent reads `preferences.md` only
 
-1. Read `~/.config/tempo-log/preferences.md` first.
-   - If missing → stop and tell the user to run `tempo install` and then edit `~/.config/tempo-log/preferences.md`.
-   - From its frontmatter, take the value of `team_config` (e.g. `rhino-config.md`).
-2. Read these in parallel:
-   - **Team config**: try `~/.config/tempo-log/<value-of-team_config>` first (personal override); fall back to `<skill-dir>/<value-of-team_config>` (shipped team default). If neither exists, warn and continue with org-only.
-   - **Org config**: try `~/.config/tempo-log/tkk-config.md` first (rare personal override); fall back to `<skill-dir>/tkk-config.md` (shipped org default).
+Read `~/.config/tempo-log/preferences.md`.
+- If missing → stop and tell the user to run `tempo install` and then edit `~/.config/tempo-log/preferences.md`.
+- From its frontmatter, take the value of `team_config` (e.g. `rhino-config.md`) — needed when assembling the fork prompt in Step 3.
+- Note user-facing prefs: granularity, daily target, default Work Type, behaviour preferences, `promote_threshold`.
 
-After reading, mentally apply override priority. From `preferences.md`, also note the three `git-scan` env vars (`GIT_SCAN_AUTHORS`, `GIT_SCAN_PARENTS`, `GIT_SCAN_SKIP`) — they need to be exported on every `tempo-git-scan` invocation.
+Main agent does **not** read team config or `tkk-config.md`. Those are read by the fork. If main agent needs mapping context mid-loop (e.g., user adds a row for an unmapped event), it pulls from the fork's `mapping_context` payload in the on-disk JSON.
+
+### Step 0b — fork reads configs
+
+The gather fork (Workflow A Step 3) reads `tkk-config.md`, the team config (with personal overlay), and `preferences.md` itself. It applies the priority rule (personal > team > org) and produces the merged tables internally. See `## Gather fork` for the full prompt.
+
+The fork inspects the three `git-scan` env vars (`GIT_SCAN_AUTHORS`, `GIT_SCAN_PARENTS`, `GIT_SCAN_SKIP`) from `preferences.md` and exports them when invoking `tempo-git-scan`.
 
 Users can run `tempo memory` at any time to print the resolved layer chain (which path each config came from, whether a personal override is active). Useful for debugging "why isn't my override taking effect?".
 
