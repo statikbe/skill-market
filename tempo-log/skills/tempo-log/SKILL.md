@@ -22,6 +22,126 @@ The skill reads four sources of configuration. **Priority (highest first): perso
 
 For tables (repo→project, calendar→issue, recurring meetings), **merge entries from all layers**, with lower-layer rows winning on key conflict. For scalars (granularity, timezone), use the first non-empty value in priority order.
 
+## Gather fork
+
+Workflow A's evidence-gathering stage runs in a forked Agent call rather than inline in the main conversation. The fork reads all configs, runs every gather query (calendar / git / Tempo / JQL) with internal parallelism, applies merged-table mapping, and writes a structured JSON file. Main agent reads from disk on demand for per-day rendering and edits the file in place when the user adjusts rows.
+
+### Output file
+
+`/tmp/tempo-gather-<from>-<to>.json` (predictable path so it can be re-found across the session).
+
+### When to dispatch
+
+Workflow A Step 3 dispatches the fork once per session, after the user has confirmed a date range. Adjustments do not re-dispatch. If the user changes the date range, the fork is re-dispatched and the file is overwritten.
+
+### Fork prompt
+
+Main agent assembles the prompt at dispatch time, substituting `<name>`, `<id>`, `<from>`, `<to>`, `<Nh>`, `<team_config>` from `preferences.md`. The literal prompt is:
+
+```
+You are gathering tempo-log evidence for a Statik backfill.
+User: <name> (accountId <id>). Range: <from> to <to>. Daily target: <Nh>.
+
+Read these in order, applying priority rule (personal > team > org):
+  1. <skill-dir>/tkk-config.md
+  2. <skill-dir>/<team_config>, then ~/.config/tempo-log/<team_config>
+     overlay if present
+  3. ~/.config/tempo-log/preferences.md
+
+Then in one parallel tool turn, run:
+  - tempo get <from> <to> --json
+  - tempo-git-scan <from> <to>  (env: GIT_SCAN_AUTHORS, GIT_SCAN_PARENTS,
+    GIT_SCAN_SKIP from preferences.md)
+  - mcp__claude_ai_Google_Calendar__list_events for the range, primary
+    calendar; exclude needsAction; exclude location markers + personal
+    exclusions per the merged tables.
+
+For each calendar event that doesn't resolve via the merged tables,
+run in parallel:
+  - mcp__atlassian__searchJiraIssuesUsingJql with
+    assignee=currentUser() AND updated in [event_date-1d, event_date+1d],
+    LIMIT 10
+  - tempo memory check --category oneonone --pattern "<event title>"
+
+Apply the merged-table mappings to produce candidate rows:
+  - Calendar event title → issue: match against calendar_to_issue and
+    recurring_meetings tables (exact string first, then case-insensitive
+    substring for recurring patterns).
+  - Repo basename in commits → project: use repo_to_project.
+  - Commits without an explicit issue tag → infer from project context if
+    exactly one open issue is active for that project in the range;
+    otherwise route to ambiguous[].
+  - Existing worklogs (from `tempo get`) → fold into existing_logged_h
+    per day; do not duplicate as candidates.
+  - Calendar items matching a 1:1 pattern with count >= promote_threshold
+    and suppress_promotion != true → promotion_candidates[].
+  - Anything else that doesn't resolve cleanly → ambiguous[].
+
+Write the result as a single JSON object to
+/tmp/tempo-gather-<from>-<to>.json matching the schema below. Validate
+JSON before writing. Return ONLY a summary object:
+  {"path": "...", "days_count": N, "total_candidates": M, "warnings_count": K}.
+
+Do not present anything to the user. Do not submit anything.
+```
+
+### Output schema (the JSON file)
+
+```json
+{
+  "session": {
+    "from": "YYYY-MM-DD",
+    "to": "YYYY-MM-DD",
+    "user_account_id": "...",
+    "created_at": "ISO-8601"
+  },
+  "days": [
+    {
+      "date": "YYYY-MM-DD",
+      "weekday": "Mon",
+      "existing_logged_h": 3.5,
+      "gap_h": 4.5,
+      "locked_in": false,
+      "candidates": [
+        {"row": 1, "time": "08:00", "issue": "OKRADM-3121",
+         "hours": 1.0, "desc": "...", "source": "calendar+git",
+         "account_hint": "OKRADMACC"}
+      ],
+      "promotion_candidates": [
+        {"pattern": "Karbon demo", "proposed_issue": "OKRADM-3200",
+         "count": 3, "row_position_hint": 4}
+      ],
+      "ambiguous": [
+        {"time": "11:00", "title": "Sleutelen aan AI & coffee",
+         "jql_candidates": [{"key": "OKRADM-3145", "summary": "..."}]}
+      ]
+    }
+  ],
+  "mapping_context": {
+    "calendar_to_issue": {"Rhino DM": "INTUNI-27"},
+    "repo_to_project":  {"okradm": "OKRADM"},
+    "recurring_meetings": [
+      {"pattern": "Rhino DM", "duration": "15m", "issue": "INTUNI-27"}
+    ],
+    "personal_exclusions": ["Office", "Bureau", "Home"],
+    "guild_issues": {"INTKNS": ["INTKNS-23", "INTKNS-42"]},
+    "account_categories": {"OPEN": "...", "CLOSED": "..."}
+  },
+  "warnings": []
+}
+```
+
+### Boundary
+
+- Fork's JSON file is the only thing crossing back into main context.
+- Configs are read by the fork only; main agent reads `preferences.md` for user-facing prefs.
+- Fork is one-shot per session.
+- Learning-loop **writes** (`tempo memory record`, `--forget`, `--suppress`) stay in main agent so they fire at user-confirmation time.
+
+### Token budget guardrails
+
+Warn at JSON file size > 200KB. Refuse at > 500KB and ask user to narrow the range.
+
 ## Step 0 — load configuration (first action of every workflow run)
 
 Personal config lives in `~/.config/tempo-log/` (created by `tempo install`). Org and team defaults ship with the skill itself — read those from this skill's directory (the path the harness announces as "Base directory for this skill" on load; referred to below as `<skill-dir>`).
