@@ -317,22 +317,13 @@ Known limitations:
 
 2. **Ask the user for the date range** if they didn't specify. Defaults: "yesterday", "this week (Mon–today)", "last week", "last 2 weeks". Confirm on ranges > 1 week.
 
-3. **Gather evidence in parallel** for each day in range:
-   - Tempo: `tempo get <from> <to>` for existing worklogs (or `tempo day <date>` per day).
-   - Calendar: events via `list_events`.
-   - Git: commit scan via `tempo-git-scan` with env vars exported from `preferences.md`.
-   - Optional: `searchJiraIssuesUsingJql` with `assignee = currentUser() AND updated >= "YYYY-MM-DD" AND updated <= "YYYY-MM-DD" ORDER BY updated ASC`.
-   - Warm the account cache with any `tempo accounts <prefix>` or `tempo last-account <prefix>` call — subsequent lookups are free for 12h.
+3. **Dispatch the gather fork.** Single Agent() call, no `subagent_type` (so it's a fork — inherits prompt cache). The prompt is the literal block in `## Gather fork → Fork prompt`, with `<name>`, `<id>`, `<from>`, `<to>`, `<Nh>`, `<team_config>` substituted from `preferences.md`.
+   - The fork reads all configs (Step 0b), runs the gather queries with internal parallelism, applies merged-table mapping, runs JQL ambiguity searches and `tempo memory check` for unmapped events, and writes the structured JSON file to `/tmp/tempo-gather-<from>-<to>.json`.
+   - The fork returns only `{path, days_count, total_candidates, warnings_count}`. Do not expect the full JSON in the fork's response.
+   - If the fork errors or returns malformed JSON twice in a row, fall through to `### Fallback: inline gather` below.
+   - On non-empty `warnings[]` (read from the file), surface them to the user before proceeding.
 
-4. **Compute per day**:
-   - Existing logged hours.
-   - Gap to daily target (from `preferences.md`).
-   - Candidate entries from calendar + commits + Jira activity, mapped via the merged tables in your team config + `tkk-config.md` + `preferences.md`.
-   - **Pre-prompt check (learning loop).** For each calendar item that doesn't resolve cleanly via the merged tables — typically 1:1 meetings (`Aurel & Jan`), generic recurring titles, or freeform event names — query the learned-mappings JSONL:
-     ```bash
-     tempo memory check --category oneonone --pattern "<title>"
-     ```
-     The output is a JSON array. If any row has `count >= promote_threshold` (default 3, frontmatter of `preferences.md`) and `suppress_promotion != true`, mark the item as a **promotion candidate** with the highest-count `resolved_to` as the proposed issue. Otherwise, mark as ambiguous as before.
+4. **(Folded into the fork.)** Per-day computation — existing hours, gap, candidate rows, promotion candidates, ambiguous items — happens inside the fork. Main agent reads from the on-disk JSON in Step 5 and does not recompute.
 
 5. **Present one day at a time** as a table, oldest first:
 
