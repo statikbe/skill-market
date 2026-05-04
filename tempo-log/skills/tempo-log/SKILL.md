@@ -384,6 +384,23 @@ Known limitations:
 
 8. **Report back**: total hours logged, by project, and any failures. On attribute errors, show the exact entry and ask whether to retry with adjusted attributes or fall back to `mcp__atlassian__addWorklogToJiraIssue` (no Work Type, correct in Tempo UI later).
 
+#### Fallback: inline gather
+
+Used only when the gather fork (Step 3) fails twice. Main agent runs the gather queries inline, accepting the token cost, and renders/edits per-day candidates from in-conversation state instead of an on-disk file.
+
+1. **Gather evidence in parallel** for each day in range:
+   - Tempo: `tempo get <from> <to>` for existing worklogs.
+   - Calendar: events via `list_events`.
+   - Git: commit scan via `tempo-git-scan` with env vars exported from `preferences.md`.
+   - Optional: `searchJiraIssuesUsingJql` with `assignee = currentUser() AND updated >= "YYYY-MM-DD" AND updated <= "YYYY-MM-DD" ORDER BY updated ASC`.
+   - Warm the account cache with any `tempo accounts <prefix>` or `tempo last-account <prefix>` call.
+
+2. **Compute per day**: existing logged hours, gap to daily target, candidate entries mapped via the merged tables (which main agent must now read directly: `tkk-config.md` + team config + `preferences.md`). For each unmapped item, run `tempo memory check --category oneonone --pattern "<title>"` and route to ambiguous / promotion candidates as before.
+
+3. Continue with steps 5–8 above, but with candidates held in conversation state (no on-disk JSON file). Adjustments mutate that in-conversation state.
+
+This fallback is intentionally less token-efficient. The fork path is the default.
+
 ### B. "Review my timesheet" / "what did I log this week?"
 
 1. `tempo summary <from> <to>` for the big picture; `tempo get <from> <to>` for the raw list.
