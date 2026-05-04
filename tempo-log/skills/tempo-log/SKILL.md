@@ -426,6 +426,7 @@ The merged tables across the three config files cover the common cases. When som
 
 ## Critical behaviours (skill-meta)
 
+- **Adjustments edit the JSON file in place.** Use `Edit` on `/tmp/tempo-gather-<from>-<to>.json`, validate parse, confirm with a one-line ack. Re-render the day's table only if the user explicitly asks for it ("show me the day again"). The on-disk file is the source of truth, not the conversation.
 - **Ask before submitting.** Per-day confirmation. Never POST without explicit approval. (Personal preference in `preferences.md`.)
 - **One day at a time, oldest first.** (Personal preference.)
 - **Don't guess mappings.** If the repo or calendar title isn't in any merged table, ask.
