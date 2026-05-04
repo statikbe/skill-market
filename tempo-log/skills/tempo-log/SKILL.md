@@ -313,7 +313,7 @@ Known limitations:
 
 ### A. "Log my time" / "backfill" / "what do I need to log?"
 
-1. **Step 0 first** — load all config files (see top of file).
+1. **Step 0a first** — load `preferences.md` (see top of file). Step 0b's config reads happen inside the gather fork in step 3.
 
 2. **Ask the user for the date range** if they didn't specify. Defaults: "yesterday", "this week (Mon–today)", "last week", "last 2 weeks". Confirm on ranges > 1 week.
 
