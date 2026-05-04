@@ -347,13 +347,15 @@ Known limitations:
 
    Source of the rendered values: `days[i].candidates`, `days[i].promotion_candidates`, `days[i].ambiguous`. Compute `Already logged` from `days[i].existing_logged_h` and `Gap` from `days[i].gap_h`.
 
-6. **Wait for user feedback**. The user can:
+6. **Per-day approval loop.** The user can:
    - Approve (`ok`, `looks good`, `yes`).
    - Adjust by row number ("change #3 to OKRADM-3108", "drop #4", "merge #1 and #5", "bump #3 to 2h").
    - Suggest issues for ambiguous items.
    - Respond to promotion candidates: `yes`, `not yet`, or `never for this pattern`.
 
-   Only proceed to the next day once they confirm the current day.
+   **Adjustments edit the JSON file in place.** Use the `Edit` tool on `/tmp/tempo-gather-<from>-<to>.json` to change one row at a time — modify the relevant `days[i].candidates[j]` object (or remove it for "drop", or insert a new one for additions). After every Edit, re-Read the file and verify it parses as JSON (e.g., `python3 -c "import json,sys; json.load(open(sys.argv[1]))" /tmp/tempo-gather-<from>-<to>.json`). On parse failure, abort the edit and re-Edit from a fresh Read.
+
+   **Confirm with a one-line ack.** "OK, #3 → OKRADM-3108." Do **not** re-render the day's table after each adjustment. Re-render only when the user explicitly asks ("show me the day again").
 
    **After the user resolves any item that came from a learning-loop category** (1:1 meetings, freeform calendar titles), record the resolution so the count climbs:
    ```bash
@@ -363,6 +365,16 @@ Known limitations:
    - **`yes`** — edit `preferences.md` to add a row to the 1:1 mappings table (or the appropriate section); then `tempo memory --forget "<pattern>"` to remove the JSONL row. Future sessions match from `preferences.md` directly.
    - **`not yet`** — nothing extra; the count increments via the `record` call above and the prompt re-fires next session at threshold.
    - **`never for this pattern`** — `tempo memory --suppress "<pattern>"`. Skill still uses the resolution for the current session but never re-prompts.
+
+   **Lock the day in.** When the user signals the day is done, show a clean final summary read fresh from disk:
+
+   ```
+   Locking in Mon 2026-04-15: 4 entries, 4.50h. OK?
+   ```
+
+   On confirm: `Edit` the file to set `days[i].locked_in = true`. Verify the edit parses. Advance to the next day.
+
+   Only proceed to the next day once the user has confirmed lock-in.
 
 7. **After all days are confirmed**, submit via `tempo batch`:
    - Resolve each issue key → numeric ID via `getJiraIssue` (the `id` field).
