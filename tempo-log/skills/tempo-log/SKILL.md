@@ -376,12 +376,11 @@ Known limitations:
 
    Only proceed to the next day once the user has confirmed lock-in.
 
-7. **After all days are confirmed**, submit via `tempo batch`:
-   - Resolve each issue key → numeric ID via `getJiraIssue` (the `id` field).
-   - Resolve each issue's `_Account_` via `tempo last-account <prefix>` / `tempo accounts <prefix>` (ask if ambiguous).
-   - Write a JSONL file to `/tmp/worklogs-<date>.jsonl`.
-   - Run `tempo batch /tmp/worklogs-<date>.jsonl`. Summary on stderr reports `N ok, M failed`.
-   - For any `ok: false` entries in the NDJSON output, inspect the `error`/`body` field. On "Account closed or archived", ask for a replacement and retry just those lines.
+7. **After all days are locked in**, submit via `tempo batch`:
+   - Read `/tmp/tempo-gather-<from>-<to>.json` once. From `days[]` where `locked_in == true`, build a JSONL file at `/tmp/worklogs-<from>-<to>.jsonl`. Each line: `{"issue": "<KEY>", "date": "...", "time": "...", "duration": "<Nh>", "account": "...", "desc": "..."}`. Use `issueKey` as the alias so `JIRA_API_TOKEN` isn't needed. Account comes from each candidate's `account_hint`; if missing, fall through to `tempo last-account <prefix>` / `tempo accounts <prefix>` (ask if ambiguous).
+   - Run `tempo batch /tmp/worklogs-<from>-<to>.jsonl`. Summary on stderr reports `N ok, M failed`.
+   - For any `ok: false` entries in the NDJSON output, inspect the `error`/`body` field. On "Account closed or archived", ask for a replacement and retry **only the failed rows** (filter the NDJSON for `ok: false`, build a retry JSONL, re-run). Never re-run the whole input file — `tempo batch` is not idempotent.
+   - Verify totals with `tempo summary <from> <to>` (or `tempo get <from> <to>`).
 
 8. **Report back**: total hours logged, by project, and any failures. On attribute errors, show the exact entry and ask whether to retry with adjusted attributes or fall back to `mcp__atlassian__addWorklogToJiraIssue` (no Work Type, correct in Tempo UI later).
 
