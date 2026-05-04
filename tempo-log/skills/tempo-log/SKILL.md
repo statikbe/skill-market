@@ -325,7 +325,7 @@ Known limitations:
 
 4. **(Folded into the fork.)** Per-day computation — existing hours, gap, candidate rows, promotion candidates, ambiguous items — happens inside the fork. Main agent reads from the on-disk JSON in Step 5 and does not recompute.
 
-5. **Present one day at a time** as a table, oldest first:
+5. **Render one day at a time from the on-disk JSON, oldest first.** Read only `days[i]` for the day you're presenting (not the whole file). Format unchanged from before:
 
    ```
    === Tuesday 2026-04-15 ===
@@ -344,6 +344,8 @@ Known limitations:
    Ambiguous:
    - "Sleutelen aan AI & coffee" at 11:00 — no issue key. Which issue should this log against?
    ```
+
+   Source of the rendered values: `days[i].candidates`, `days[i].promotion_candidates`, `days[i].ambiguous`. Compute `Already logged` from `days[i].existing_logged_h` and `Gap` from `days[i].gap_h`.
 
 6. **Wait for user feedback**. The user can:
    - Approve (`ok`, `looks good`, `yes`).
