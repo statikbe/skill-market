@@ -37,6 +37,8 @@ The team config file is named per circle (`rhino-config.md`, `panda-config.md`, 
 
 After reading, mentally apply override priority. From `preferences.md`, also note the three `git-scan` env vars (`GIT_SCAN_AUTHORS`, `GIT_SCAN_PARENTS`, `GIT_SCAN_SKIP`) — they need to be exported on every `tempo-git-scan` invocation.
 
+Users can run `tempo memory` at any time to print the resolved layer chain (which path each config came from, whether a personal override is active). Useful for debugging "why isn't my override taking effect?".
+
 ## Why this skill bundles a CLI (not an MCP)
 
 Three Tempo MCPs were evaluated. None worked for Statik's Atlassian Cloud:
@@ -79,6 +81,7 @@ tempo batch [--dry-run] <file.jsonl|->  submit many worklogs from JSONL
 tempo update <worklog-id> [--date ...] [--time ...] [--duration ...] [--account ...] [--desc ...] [--worktype ...]
 tempo delete <worklog-id>
 tempo accounts-refresh                 force rebuild of OPEN-account cache (normally 12h TTL)
+tempo memory                           print the resolved config layer chain (personal/team/org/skill)
 ```
 
 Duration formats: `1h30m`, `2h`, `45m`, `0.5h`, `1.25h`. The CLI rounds to Tempo's 15-min granularity implicitly via `timeSpentSeconds`.

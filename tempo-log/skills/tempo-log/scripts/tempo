@@ -747,6 +747,85 @@ cmd_accounts_refresh() {
   printf 'refreshed: %s (%s OPEN accounts cached)\n' "$ACCOUNTS_CACHE" "$(jq 'length' < "$ACCOUNTS_CACHE")"
 }
 
+cmd_memory() {
+  # Show which tempo-log config files are in effect, from which layer.
+  # No API calls; safe to run before TEMPO_API_TOKEN is set.
+  local config_dir="${TEMPO_CONFIG_DIR:-$HOME/.config/tempo-log}"
+  local prefs="$config_dir/preferences.md"
+
+  # Resolve skill_dir from this script's location (follow symlinks).
+  local src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    local link_dir
+    link_dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ "$src" != /* ]] && src="$link_dir/$src"
+  done
+  local skill_dir
+  skill_dir=$(cd -P "$(dirname "$src")/.." && pwd)
+
+  _show_layer() {
+    local label=$1 personal=$2 shipped=$3
+    printf '  %s\n' "$label"
+    printf '    shipped:           %s%s\n' "$shipped" "$( [ -f "$shipped" ] || printf ' (NOT FOUND)' )"
+    if [ -f "$personal" ]; then
+      printf '    personal override: %s (active)\n' "$personal"
+      printf '    -> using personal override\n'
+    else
+      printf '    personal override: %s (not present)\n' "$personal"
+      if [ -f "$shipped" ]; then
+        printf '    -> using shipped default\n'
+      else
+        printf '    -> NOT LOADED\n'
+      fi
+    fi
+  }
+
+  printf 'Tempo-log config — files loaded by SKILL.md Step 0:\n\n'
+
+  # --- preferences.md (personal layer) ---
+  printf '  preferences.md (personal)\n'
+  printf '    %s\n' "$prefs"
+  if [ ! -f "$prefs" ]; then
+    printf '    -> NOT FOUND. Run `tempo install` to bootstrap from preferences.template.md.\n\n'
+    printf 'Skill: %s/SKILL.md\n' "$skill_dir"
+    return 0
+  fi
+  local team_config_name=""
+  team_config_name=$(awk '
+    /^---[[:space:]]*$/ { if (++count == 2) exit; next }
+    count == 1 && /^team_config:/ {
+      sub(/^team_config:[[:space:]]*/, "")
+      sub(/[[:space:]]*#.*$/, "")
+      gsub(/[[:space:]]+$/, "")
+      print
+      exit
+    }
+  ' "$prefs")
+  if [ -n "$team_config_name" ]; then
+    printf '    -> active, team_config = %s\n\n' "$team_config_name"
+  else
+    printf '    -> active, but team_config is unset in frontmatter\n\n'
+  fi
+
+  # --- team config ---
+  if [ -n "$team_config_name" ]; then
+    _show_layer \
+      "$team_config_name (team)" \
+      "$config_dir/$team_config_name" \
+      "$skill_dir/$team_config_name"
+    printf '\n'
+  fi
+
+  # --- org config ---
+  _show_layer \
+    "tkk-config.md (org)" \
+    "$config_dir/tkk-config.md" \
+    "$skill_dir/tkk-config.md"
+
+  printf '\nSkill: %s/SKILL.md\n' "$skill_dir"
+}
+
 cmd_install() {
   local force=0
   local bin_dir="${TEMPO_INSTALL_BIN_DIR:-$HOME/.local/bin}"
@@ -865,6 +944,7 @@ Usage:
            worklog. Blank lines and # comments ignored. Parallel execution.
   tempo delete <worklog-id>
   tempo accounts-refresh                 force rebuild of OPEN-account cache (normally 12h TTL)
+  tempo memory                           print which config files SKILL.md loads, from which layer
   tempo install [--bin <dir>] [--config <dir>] [--force]
                                          symlink CLI onto $PATH and bootstrap ~/.config/tempo-log/preferences.md
 
@@ -879,9 +959,10 @@ EOF
 
 # -------- dispatch --------
 
-# install and help do not need API tokens, so handle them before _require_env.
+# install, memory and help do not need API tokens, so handle them before _require_env.
 case "${1:-}" in
   install)           shift; cmd_install "$@"; exit 0 ;;
+  memory)            shift; cmd_memory "$@";  exit 0 ;;
   ""|-h|--help|help) usage; exit 0 ;;
 esac
 
