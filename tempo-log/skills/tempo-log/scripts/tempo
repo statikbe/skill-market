@@ -747,11 +747,234 @@ cmd_accounts_refresh() {
   printf 'refreshed: %s (%s OPEN accounts cached)\n' "$ACCOUNTS_CACHE" "$(jq 'length' < "$ACCOUNTS_CACHE")"
 }
 
+_memory_today() { date +%F; }
+
+_memory_threshold() {
+  # Read promote_threshold from preferences.md frontmatter; default 3.
+  local prefs=$1
+  local t=3
+  if [ -f "$prefs" ]; then
+    t=$(awk '
+      /^---[[:space:]]*$/ { if (++count == 2) exit; next }
+      count == 1 && /^promote_threshold:/ {
+        sub(/^promote_threshold:[[:space:]]*/, "")
+        sub(/[[:space:]]*#.*$/, "")
+        gsub(/[[:space:]]+$/, "")
+        print
+        exit
+      }
+    ' "$prefs")
+    [[ "$t" =~ ^[0-9]+$ ]] || t=3
+  fi
+  printf '%s' "$t"
+}
+
+_memory_learned() {
+  local file=$1 prefs=$2
+  local threshold
+  threshold=$(_memory_threshold "$prefs")
+
+  if [ ! -f "$file" ] || [ ! -s "$file" ]; then
+    printf 'No learned mappings yet (%s).\n\n' "$file"
+    printf 'The skill records mappings here as you confirm ambiguous resolutions.\n'
+    printf 'Promote threshold: %s\n' "$threshold"
+    return 0
+  fi
+
+  printf 'Learned mappings (%s):\n\n' "$file"
+  printf '%5s  %-10s  %-32s  %-15s  %-10s  %-10s  %s\n' \
+    'count' 'category' 'title_pattern' 'resolved_to' 'first_seen' 'last_seen' 'suppress'
+  printf '%5s  %-10s  %-32s  %-15s  %-10s  %-10s  %s\n' \
+    '-----' '----------' '--------------------------------' '---------------' '----------' '----------' '--------'
+
+  jq -r '
+    [.count, (.category // "?"), .title_pattern, .resolved_to,
+     (.first_seen // "?"), (.last_seen // "?"),
+     (if .suppress_promotion then "yes" else "" end)]
+    | @tsv
+  ' "$file" | sort -t$'\t' -k1,1nr | awk -F'\t' '{
+    printf "%5s  %-10s  %-32s  %-15s  %-10s  %-10s  %s\n", $1, $2, $3, $4, $5, $6, $7
+  }'
+
+  printf '\nPromote threshold: %s (set promote_threshold in preferences.md frontmatter; default 3)\n' "$threshold"
+}
+
+_memory_forget() {
+  local file=$1 pattern=$2
+  if [ ! -f "$file" ]; then
+    printf 'No learned mappings file at %s — nothing to forget.\n' "$file"
+    return 0
+  fi
+  local matches
+  matches=$(jq -c --arg p "$pattern" 'select(.title_pattern == $p)' "$file" | wc -l | tr -d ' ')
+  if [ "$matches" -eq 0 ]; then
+    printf 'No entry with title_pattern == "%s". Run `tempo memory --learned` to list current entries.\n' "$pattern" >&2
+    return 1
+  fi
+  local tmp
+  tmp=$(mktemp)
+  jq -c --arg p "$pattern" 'select(.title_pattern != $p)' "$file" > "$tmp"
+  mv "$tmp" "$file"
+  printf 'Removed %s entry/entries with title_pattern == "%s".\n' "$matches" "$pattern"
+}
+
+_memory_suppress() {
+  local file=$1 pattern=$2
+  if [ ! -f "$file" ]; then
+    printf 'No learned mappings file at %s — nothing to suppress.\n' "$file" >&2
+    return 1
+  fi
+  local matches
+  matches=$(jq -c --arg p "$pattern" 'select(.title_pattern == $p)' "$file" | wc -l | tr -d ' ')
+  if [ "$matches" -eq 0 ]; then
+    printf 'No entry with title_pattern == "%s".\n' "$pattern" >&2
+    return 1
+  fi
+  local tmp
+  tmp=$(mktemp)
+  jq -c --arg p "$pattern" '
+    if .title_pattern == $p then .suppress_promotion = true else . end
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+  printf 'Suppressed promotion for %s entry/entries with title_pattern == "%s".\n' "$matches" "$pattern"
+}
+
+_memory_record() {
+  # Record a user-confirmed ambiguity resolution. Creates a new row, or
+  # increments .count and updates .last_seen on an existing row that matches
+  # category + title_pattern + resolved_to. Prints the resulting row as JSON.
+  local file=$1; shift
+  local category="" pattern="" resolved=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --category)    category=$2; shift 2 ;;
+      --pattern)     pattern=$2;  shift 2 ;;
+      --resolved-to) resolved=$2; shift 2 ;;
+      *) _die "tempo memory record: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$category" ] || _die "tempo memory record: --category required"
+  [ -n "$pattern" ]  || _die "tempo memory record: --pattern required"
+  [ -n "$resolved" ] || _die "tempo memory record: --resolved-to required"
+
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+
+  local today
+  today=$(_memory_today)
+
+  local matched
+  matched=$(jq -c \
+    --arg c "$category" --arg p "$pattern" --arg r "$resolved" \
+    'select(.category == $c and .title_pattern == $p and .resolved_to == $r)' \
+    "$file" | head -n1)
+
+  if [ -n "$matched" ]; then
+    local tmp
+    tmp=$(mktemp)
+    jq -c \
+      --arg c "$category" --arg p "$pattern" --arg r "$resolved" --arg t "$today" \
+      'if (.category == $c and .title_pattern == $p and .resolved_to == $r)
+       then .count = (.count + 1) | .last_seen = $t
+       else . end' "$file" > "$tmp"
+    mv "$tmp" "$file"
+    jq -c \
+      --arg c "$category" --arg p "$pattern" --arg r "$resolved" \
+      'select(.category == $c and .title_pattern == $p and .resolved_to == $r)' \
+      "$file" | head -n1
+  else
+    local new_row
+    new_row=$(jq -c -n \
+      --arg c "$category" --arg p "$pattern" --arg r "$resolved" --arg t "$today" \
+      '{category: $c, title_pattern: $p, resolved_to: $r, count: 1, first_seen: $t, last_seen: $t}')
+    printf '%s\n' "$new_row" >> "$file"
+    printf '%s\n' "$new_row"
+  fi
+}
+
+_memory_check() {
+  # Look up rows by category + title_pattern. Prints a JSON array (possibly
+  # empty). SKILL.md uses this before prompting the user about an ambiguity:
+  # if any row has count >= promote_threshold and .suppress_promotion != true,
+  # propose promotion instead of re-asking.
+  local file=$1; shift
+  local category="" pattern=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --category) category=$2; shift 2 ;;
+      --pattern)  pattern=$2;  shift 2 ;;
+      *) _die "tempo memory check: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$category" ] || _die "tempo memory check: --category required"
+  [ -n "$pattern" ]  || _die "tempo memory check: --pattern required"
+
+  if [ ! -f "$file" ] || [ ! -s "$file" ]; then
+    printf '[]\n'
+    return 0
+  fi
+  jq -cs --arg c "$category" --arg p "$pattern" \
+    '[.[] | select(.category == $c and .title_pattern == $p)]' "$file"
+}
+
 cmd_memory() {
-  # Show which tempo-log config files are in effect, from which layer.
+  # Show which tempo-log config files are in effect, from which layer; or
+  # inspect / mutate the learned-mappings JSONL.
   # No API calls; safe to run before TEMPO_API_TOKEN is set.
   local config_dir="${TEMPO_CONFIG_DIR:-$HOME/.config/tempo-log}"
   local prefs="$config_dir/preferences.md"
+  local learned_file="$config_dir/learned-mappings.jsonl"
+
+  case "${1:-}" in
+    --learned)
+      _memory_learned "$learned_file" "$prefs"
+      return 0
+      ;;
+    --forget)
+      shift
+      [ $# -gt 0 ] || _die "tempo memory --forget needs a pattern"
+      _memory_forget "$learned_file" "$1"
+      return 0
+      ;;
+    --suppress)
+      shift
+      [ $# -gt 0 ] || _die "tempo memory --suppress needs a pattern"
+      _memory_suppress "$learned_file" "$1"
+      return 0
+      ;;
+    record)
+      shift
+      _memory_record "$learned_file" "$@"
+      return 0
+      ;;
+    check)
+      shift
+      _memory_check "$learned_file" "$@"
+      return 0
+      ;;
+    -h|--help)
+      cat <<'EOF'
+tempo memory — inspect tempo-log config and learned mappings
+
+Usage:
+  tempo memory                       print which configs SKILL.md loads, from which layer
+  tempo memory --learned             print learned mappings (sorted by count desc)
+  tempo memory --forget <pattern>    remove all rows with this exact title_pattern
+  tempo memory --suppress <pattern>  mark rows with this title_pattern as never-promote
+  tempo memory record --category <c> --pattern <p> --resolved-to <r>
+                                     record a user-confirmed ambiguity resolution
+                                     (new row, or increment count + update last_seen)
+  tempo memory check  --category <c> --pattern <p>
+                                     return matching rows as a JSON array (or [])
+
+The `record` and `check` subcommands are primarily called by the SKILL.md
+workflow, but they're safe for direct use.
+EOF
+      return 0
+      ;;
+    "") : ;;  # fall through to config-listing
+    *) _die "unknown tempo memory subcommand: $1 (try: tempo memory --help)" ;;
+  esac
 
   # Resolve skill_dir from this script's location (follow symlinks).
   local src="${BASH_SOURCE[0]}"
@@ -945,6 +1168,12 @@ Usage:
   tempo delete <worklog-id>
   tempo accounts-refresh                 force rebuild of OPEN-account cache (normally 12h TTL)
   tempo memory                           print which config files SKILL.md loads, from which layer
+  tempo memory --learned | --forget <p> | --suppress <p>
+                                         inspect / mutate the learned-mappings JSONL
+  tempo memory record --category <c> --pattern <p> --resolved-to <r>
+                                         record a user-confirmed ambiguity resolution (skill helper)
+  tempo memory check  --category <c> --pattern <p>
+                                         look up matching learned mappings as JSON (skill helper)
   tempo install [--bin <dir>] [--config <dir>] [--force]
                                          symlink CLI onto $PATH and bootstrap ~/.config/tempo-log/preferences.md
 

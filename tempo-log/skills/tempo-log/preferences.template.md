@@ -3,6 +3,7 @@ name: preferences
 description: Personal config for tempo-log skill — TEMPLATE; copy to preferences.md and fill in
 layer: personal
 team_config: <your-circle>-config.md   # e.g. rhino-config.md, panda-config.md
+promote_threshold: 3                   # learned mappings get a promotion prompt at this count
 ---
 
 # Personal preferences
@@ -79,6 +80,18 @@ Pick the ones that match how you want the skill to act. Defaults shown:
 ## Recently used Account keys (informational)
 
 Optional. Sanity-check list of accounts you commonly log against — not authoritative. Skill resolves accounts via `tempo last-account` / `tempo accounts` at runtime.
+
+## Learned mappings
+
+The skill keeps an append-only log of user-confirmed ambiguity resolutions at `~/.config/tempo-log/learned-mappings.jsonl`. Each time you resolve a recurring ambiguity (a 1:1 with someone whose meeting isn't in the table, a calendar event that isn't mapped, …), the row's `count` increments. Once `count` reaches `promote_threshold` (set in the frontmatter above; default 3), the skill proposes promoting the mapping permanently into `preferences.md` so future sessions don't re-ask.
+
+Inspect or edit at any time:
+
+- `tempo memory --learned` — sorted summary
+- `tempo memory --forget "<title pattern>"` — remove an entry
+- `tempo memory --suppress "<title pattern>"` — keep the count but never propose promotion
+
+The JSONL is per-machine (same scope as Claude Code's auto-memory); deleting it resets all "never promote" choices.
 
 ## Team-default overrides
 
